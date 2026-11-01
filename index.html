@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1f6fd1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wasser">
+<title>Wasserzähler</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f3f6f9; --card:#fff; --text:#1d2733; --muted:#6b7785; --accent:#1f6fd1; --accent2:#13a89e; --warn:#c0392b; --grid:#e3e8ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#10161d; --card:#1a222c; --text:#e6edf3; --muted:#8b97a5; --accent:#4a90e2; --accent2:#2ec4b6; --warn:#ff6b5b; --grid:#2a3440; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
+         font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  h1 { font-size:20px; margin:0; }
+  button { background:none; border:1px solid var(--grid); color:var(--muted); border-radius:8px; padding:6px 10px; font-size:14px; cursor:pointer; }
+  .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .stand { font-size:40px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:1px; }
+  .stand .dez { color:var(--warn); }
+  .muted { color:var(--muted); font-size:14px; }
+  .warn { color:var(--warn); font-weight:600; font-size:14px; margin-top:6px; }
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
+  @media (min-width:640px) { .grid { grid-template-columns:repeat(4,1fr); } }
+  .kpi { margin-bottom:0; }
+  .kpi .wert { font-size:22px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .chart { position:relative; height:240px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>💧 Wasserzähler</h1>
+    <button id="reload" type="button">↻ Aktualisieren</button>
+  </header>
+
+  <div class="card">
+    <div class="muted">Aktueller Zählerstand</div>
+    <div class="stand" id="stand">–</div>
+    <div class="muted" id="zeit">lädt …</div>
+    <div class="warn" id="warn"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card kpi"><div class="muted">Heute</div><div class="wert" id="heute">–</div></div>
+    <div class="card kpi"><div class="muted">Gestern</div><div class="wert" id="gestern">–</div></div>
+    <div class="card kpi"><div class="muted">Dieser Monat</div><div class="wert" id="monat">–</div></div>
+    <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div></div>
+  </div>
+
+  <div class="card"><div class="muted">Tagesverbrauch – letzte 30 Tage (Liter)</div><div class="chart"><canvas id="cTage"></canvas></div></div>
+  <div class="card"><div class="muted">Monatsverbrauch – letzte 12 Monate (m³)</div><div class="chart"><canvas id="cMonate"></canvas></div></div>
+</div>
+
+<script>
+  // Adresse der Apps-Script-WebApp (ohne Schlüssel – der Schlüssel steht nur im Lesezeichen)
+  const API = 'https://script.google.com/macros/s/AKfycbzhpkMh_SM98CTPeatrLI6F0BhOWDux-SCZd08H_gWgY2oU3HsEe4npLG2Z9fj25vQz/exec';
+
+  // Schlüssel aus der URL (?v=...) holen, sonst aus dem Browser-Speicher
+  let KEY = new URLSearchParams(location.search).get('v') || '';
+  try {
+    if (KEY) localStorage.setItem('wz_key', KEY); else KEY = localStorage.getItem('wz_key') || '';
+  } catch (e) {}
+
+  let chTage = null, chMonate = null;
+  const $ = id => document.getElementById(id);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  const liter = m3 => m3 === null || m3 === undefined ? '–' : (m3 * 1000).toLocaleString('de-DE', { maximumFractionDigits: 0 }) + ' L';
+  const kubik = m3 => m3 === null || m3 === undefined ? '–' : m3.toLocaleString('de-DE', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' m³';
+
+  function zeigeStand(v) {
+    if (v === null || v === undefined) return '–';
+    const [ganz, dez] = v.toFixed(4).split('.');
+    return ganz.padStart(5, '0') + ',<span class="dez">' + dez + '</span> m³';
+  }
+
+  function render(d) {
+    $('stand').innerHTML = zeigeStand(d.stand);
+    $('zeit').textContent = d.standZeit ? 'Ablesung: ' + new Date(d.standZeit).toLocaleString('de-DE') : 'Noch keine Daten';
+
+    let warn = '';
+    if (d.empfangen) {
+      const alterMin = (Date.now() - d.empfangen) / 60000;
+      if (alterMin > d.maxAlterMin) warn = '⚠ Letzte Meldung der Kamera vor ' + Math.round(alterMin) + ' Minuten.';
+    }
+    if (d.status && d.status !== 'OK') warn += (warn ? ' ' : '⚠ ') + 'Letzte Ablesung fehlerhaft: ' + d.status;
+    $('warn').textContent = warn;
+
+    $('heute').textContent = liter(d.heute);
+    $('gestern').textContent = liter(d.gestern);
+    $('monat').textContent = kubik(d.monat);
+    $('schnitt').textContent = liter(d.schnitt30);
+
+    const opt = {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: css('--muted') }, grid: { display: false } },
+        y: { beginAtZero: true, ticks: { color: css('--muted') }, grid: { color: css('--grid') } }
+      }
+    };
+    if (chTage) chTage.destroy();
+    if (chMonate) chMonate.destroy();
+    chTage = new Chart($('cTage'), { type: 'bar', options: opt, data: {
+      labels: d.tage.map(t => t.d.slice(8, 10) + '.' + t.d.slice(5, 7) + '.'),
+      datasets: [{ data: d.tage.map(t => Math.round(t.v * 1000)), backgroundColor: css('--accent'), borderRadius: 4 }] } });
+    chMonate = new Chart($('cMonate'), { type: 'bar', options: opt, data: {
+      labels: d.monate.map(m => m.m.slice(5, 7) + '/' + m.m.slice(2, 4)),
+      datasets: [{ data: d.monate.map(m => Math.round(m.v * 1000) / 1000), backgroundColor: css('--accent2'), borderRadius: 4 }] } });
+  }
+
+  async function laden() {
+    if (!KEY) { $('zeit').textContent = 'Kein Zugriffsschlüssel – Seite mit ?v=SCHLÜSSEL öffnen.'; return; }
+    try {
+      const r = await fetch(API + '?format=json&v=' + encodeURIComponent(KEY), { cache: 'no-store' });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      render(d);
+    } catch (err) {
+      $('zeit').textContent = 'Fehler beim Laden: ' + err.message;
+    }
+  }
+
+  $('reload').addEventListener('click', laden);
+  laden();
+  setInterval(laden, 5 * 60 * 1000); // alle 5 Minuten neu laden
+</script>
+</body>
+</html>
