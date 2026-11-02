@@ -102,12 +102,20 @@ function tagesVerbrauch(feld) {
   return out;
 }
 
-function chart(id, typ, labels, werte, farbe, label) {
+// temp (optional): Temperaturwerte als Linie auf zweiter Achse (rechts)
+function chart(id, typ, labels, werte, farbe, label, temp) {
   if (charts[id]) charts[id].destroy();
+  const ds = [{ label, data: werte, backgroundColor: farbe, borderColor: farbe, pointRadius: 0, tension: .3, fill: false }];
+  const scales = { y:{ beginAtZero:true } };
+  if (temp) {
+    ds.push({ type:'line', label:'Ø °C', data: temp, borderColor:'#8e8e93', backgroundColor:'#8e8e93',
+              pointRadius:2, tension:.3, spanGaps:true, yAxisID:'yT' });
+    scales.yT = { position:'right', grid:{ drawOnChartArea:false }, title:{ display:true, text:'°C' } };
+  }
   charts[id] = new Chart($(id), {
     type: typ,
-    data: { labels, datasets: [{ label, data: werte, backgroundColor: farbe, borderColor: farbe, pointRadius: 0, tension: .3, fill: false }] },
-    options: { maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+    data: { labels, datasets: ds },
+    options: { maintainAspectRatio:false, plugins:{ legend:{ display:!!temp } }, scales }
   });
 }
 
@@ -133,6 +141,9 @@ function anzeigen() {
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
   $('heute').textContent = fmt((tv[iso(heute)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
   $('gestern').textContent = fmt((tv[iso(gestern)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
+  const tempTag = {};
+  daten.tage.forEach(t => { if (!isNaN(t.temp)) tempTag[t.datum] = t.temp; });
+  if (medium === 'gas' && tempTag[iso(gestern)] !== undefined) $('gestern').textContent += ' · Ø ' + fmt(tempTag[iso(gestern)], 1) + ' °C';
 
   // Monat
   const monatPrefix = iso(heute).slice(0, 7);
@@ -140,16 +151,17 @@ function anzeigen() {
   $('monat').textContent = fmt(monatSumme * m.faktor, m.dez) + ' ' + m.einheit;
 
   // letzte 30 Tage
-  const labels = [], werte = [];
+  const labels = [], werte = [], temps = [];
   for (let i = 29; i >= 0; i--) {
     const d = iso(new Date(Date.now() - i * 864e5));
     labels.push(d.slice(8, 10) + '.' + d.slice(5, 7) + '.');
+    temps.push(tempTag[d] ?? null);
     werte.push(tv[d] !== undefined ? +(tv[d] * m.faktor).toFixed(m.dez) : null);
   }
   const vorhanden = werte.filter(v => v !== null);
   $('schnitt').textContent = vorhanden.length ? fmt(vorhanden.reduce((a, b) => a + b, 0) / vorhanden.length, m.dez) + ' ' + m.einheit : '–';
-  $('tTage').textContent = 'Tagesverbrauch – letzte 30 Tage (' + m.einheit + ')';
-  chart('cTage', 'bar', labels, werte, m.farbe, m.einheit);
+  $('tTage').textContent = 'Tagesverbrauch – letzte 30 Tage (' + m.einheit + ')' + (medium === 'gas' ? ' mit Ø Außentemperatur Diekirch' : '');
+  chart('cTage', 'bar', labels, werte, m.farbe, m.einheit, medium === 'gas' ? temps : null);
 
   // letzte 12 Monate
   const mon = {};

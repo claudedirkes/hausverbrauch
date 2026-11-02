@@ -9,7 +9,9 @@ const KOPF_AKTUELL = ['Empfangen', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)
                       'Gas abgelesen', 'Wasser abgelesen',
                       'Einbrüche L1', 'Einbrüche L2', 'Einbrüche L3',
                       'Überspannung L1', 'Überspannung L2', 'Überspannung L3', 'Stromausfälle'];
-const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)'];
+const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)',
+                   'Ø Außentemp. Diekirch (°C)'];
+const LAT = 49.868, LON = 6.159;   // Diekirch
 
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
@@ -18,6 +20,34 @@ function einrichten() {
     const sh = ss.getSheetByName(name) || ss.insertSheet(name);
     sh.getRange(1, 1, 1, kopf.length).setValues([kopf]).setFontWeight('bold');
     sh.setFrozenRows(1);
+  });
+  temperaturNachtragen();   // füllt fehlende Tagestemperaturen nach (fragt beim 1. Mal nach Berechtigung)
+}
+
+// Tagesmittel der Außentemperatur (Open-Meteo, Diekirch) für alle abgeschlossenen Tage ohne Wert eintragen
+function temperaturNachtragen() {
+  const tage = SpreadsheetApp.getActive().getSheetByName('Tage');
+  const n = tage.getLastRow() - 1;
+  if (n < 1) return;
+  const heute = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  const werte = tage.getRange(2, 1, n, 6).getDisplayValues();
+  const fehlend = werte.map((r, i) => ({ datum: r[0], zeile: i + 2, leer: r[5] === '' }))
+                       .filter(x => x.leer && x.datum && x.datum < heute);
+  if (!fehlend.length) return;
+
+  const temp = {};
+  const holen = url => {
+    const j = JSON.parse(UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText());
+    if (j.daily) j.daily.time.forEach((t, i) => { if (j.daily.temperature_2m_mean[i] !== null) temp[t] = j.daily.temperature_2m_mean[i]; });
+  };
+  const basis = '?latitude=' + LAT + '&longitude=' + LON + '&daily=temperature_2m_mean&timezone=' + encodeURIComponent(TZ);
+  holen('https://api.open-meteo.com/v1/forecast' + basis + '&past_days=92&forecast_days=1');
+  const aelter = fehlend.filter(x => temp[x.datum] === undefined).map(x => x.datum).sort();
+  if (aelter.length) {
+    holen('https://archive-api.open-meteo.com/v1/archive' + basis + '&start_date=' + aelter[0] + '&end_date=' + aelter[aelter.length - 1]);
+  }
+  fehlend.forEach(x => {
+    if (temp[x.datum] !== undefined) tage.getRange(x.zeile, 6).setValue(Math.round(temp[x.datum] * 10) / 10);
   });
 }
 
@@ -50,6 +80,7 @@ function doPost(e) {
 
     // Tagesblatt: eine Zeile pro Tag mit dem jeweils letzten Zählerstand (Endstand)
     const tage = ss.getSheetByName('Tage');
+    let neuerTag = false;
     const datum = Utilities.formatDate(jetzt, TZ, 'yyyy-MM-dd');
     const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
     const letzte = tage.getLastRow();
@@ -64,7 +95,10 @@ function doPost(e) {
       tage.appendRow(zeile);
       tage.getRange(tage.getLastRow(), 1).setNumberFormat('@');  // Datum als Text speichern
       tage.getRange(tage.getLastRow(), 1).setValue(datum);
+      neuerTag = true;
     }
+    // Bei Tageswechsel die Temperatur des Vortags nachtragen (Fehler hier dürfen das Speichern nicht stoppen)
+    if (neuerTag) { try { temperaturNachtragen(); } catch (err) { console.log('Temperatur: ' + err); } }
   } finally {
     lock.releaseLock();
   }
@@ -84,7 +118,7 @@ function doGet() {
   // bis zu 400 Tage
   const nT = Math.max(0, tage.getLastRow() - 1);
   const anzT = Math.min(nT, 400);
-  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 5).getDisplayValues() : [];
+  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 6).getDisplayValues() : [];
 
   return antwort({
     ok: true,
@@ -101,7 +135,8 @@ function doGet() {
       import: parseFloat(String(r[1]).replace(',', '.')),
       export: parseFloat(String(r[2]).replace(',', '.')),
       gas: parseFloat(String(r[3]).replace(',', '.')),
-      wasser: parseFloat(String(r[4]).replace(',', '.'))
+      wasser: parseFloat(String(r[4]).replace(',', '.')),
+      temp: parseFloat(String(r[5]).replace(',', '.'))
     }))
   });
 }
