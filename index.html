@@ -115,8 +115,11 @@ function anzeigen() {
   if (!letzte) { $('zeit').textContent = 'Noch keine Daten im Sheet.'; return; }
 
   const zeit = new Date(letzte.zeit);
-  $('stand').textContent = fmt(Number(letzte[m.feld]), m.standDez) + ' ' + m.standEinheit;
-  $('zeit').textContent = 'Stand: ' + zeit.toLocaleString('de-DE');
+  // Gas/Wasser stehen nur stündlich im Sheet: letzte Messung mit Wert suchen
+  const mitWert = [...daten.messungen].reverse().find(x => x[m.feld] !== '' && x[m.feld] !== null && x[m.feld] !== undefined);
+  const abl = mitWert && (medium === 'gas' ? mitWert.gasZeit : medium === 'wasser' ? mitWert.wasserZeit : null);
+  $('stand').textContent = mitWert ? fmt(Number(mitWert[m.feld]), m.standDez) + ' ' + m.standEinheit : '–';
+  $('zeit').textContent = 'Stand: ' + (abl ? new Date(abl) : mitWert ? new Date(mitWert.zeit) : zeit).toLocaleString('de-DE');
   const alterMin = (Date.now() - zeit) / 60000;
   $('warn').textContent = alterMin > 45 ? '⚠ Letzter Wert ist älter als ' + Math.round(alterMin) + ' Minuten – Bridge prüfen.' : '';
 

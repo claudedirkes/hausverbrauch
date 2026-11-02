@@ -32,11 +32,18 @@ function doPost(e) {
     const jetzt = new Date();
     const zahl = v => (v === undefined || v === null) ? '' : Number(v);
 
+    // Gas und Wasser nur 1x pro Stunde schreiben (erste Meldung einer neuen Stunde), Strom alle 15 Min.
+    const props = PropertiesService.getScriptProperties();
+    const stunde = Utilities.formatDate(jetzt, TZ, 'yyyy-MM-dd HH');
+    const gw = props.getProperty('gwStunde') !== stunde;
+    if (gw) props.setProperty('gwStunde', stunde);
+    const nurGW = v => gw ? v : '';
+
     ss.getSheetByName('Aktuell').appendRow([
       jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
-      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3),
+      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), nurGW(zahl(d.gas_m3)), nurGW(zahl(d.wasser_m3)),
       zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a),
-      zeitstempel(d.gas_ts), zeitstempel(d.wasser_ts),
+      nurGW(zeitstempel(d.gas_ts)), nurGW(zeitstempel(d.wasser_ts)),
       zahl(d.sag_l1), zahl(d.sag_l2), zahl(d.sag_l3),
       zahl(d.swell_l1), zahl(d.swell_l2), zahl(d.swell_l3), zahl(d.stromausfall)
     ]);
@@ -48,6 +55,10 @@ function doPost(e) {
     const letzte = tage.getLastRow();
     const letztesDatum = letzte > 1 ? String(tage.getRange(letzte, 1).getDisplayValue()) : '';
     if (letztesDatum === datum) {
+      if (!gw) {  // Gas/Wasser-Endstand des Tages nur stündlich aktualisieren
+        const alt = tage.getRange(letzte, 4, 1, 2).getValues()[0];
+        zeile[3] = alt[0]; zeile[4] = alt[1];
+      }
       tage.getRange(letzte, 1, 1, zeile.length).setValues([zeile]);
     } else {
       tage.appendRow(zeile);
