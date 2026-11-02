@@ -5,39 +5,48 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#1f6fd1">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Wasser">
-<title>Wasserzähler</title>
+<meta name="apple-mobile-web-app-title" content="Hausverbrauch">
+<title>Hausverbrauch</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-  :root { --bg:#f3f6f9; --card:#fff; --text:#1d2733; --muted:#6b7785; --accent:#1f6fd1; --accent2:#13a89e; --warn:#c0392b; --grid:#e3e8ee; }
+  :root { --bg:#f3f6f9; --card:#fff; --text:#1d2733; --muted:#6b7785; --accent:#1f6fd1; --warn:#c0392b; --grid:#e3e8ee; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#10161d; --card:#1a222c; --text:#e6edf3; --muted:#8b97a5; --accent:#4a90e2; --accent2:#2ec4b6; --warn:#ff6b5b; --grid:#2a3440; }
+    :root { --bg:#10161d; --card:#1a222c; --text:#e6edf3; --muted:#8b97a5; --accent:#4a90e2; --warn:#ff6b5b; --grid:#2a3440; }
   }
   * { box-sizing:border-box; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--text);
-         font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
   .wrap { max-width:900px; margin:0 auto; }
   header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
   h1 { font-size:20px; margin:0; }
   button { background:none; border:1px solid var(--grid); color:var(--muted); border-radius:8px; padding:6px 10px; font-size:14px; cursor:pointer; }
+  .tabs { display:flex; gap:8px; margin-bottom:12px; }
+  .tabs button { flex:1; padding:10px; font-size:15px; font-weight:600; }
+  .tabs button.aktiv { background:var(--accent); color:#fff; border-color:var(--accent); }
   .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-  .stand { font-size:40px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:1px; }
-  .stand .dez { color:var(--warn); }
+  .stand { font-size:36px; font-weight:700; font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); font-size:14px; }
   .warn { color:var(--warn); font-weight:600; font-size:14px; margin-top:6px; }
   .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
   @media (min-width:640px) { .grid { grid-template-columns:repeat(4,1fr); } }
   .kpi { margin-bottom:0; }
-  .kpi .wert { font-size:22px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
   .chart { position:relative; height:240px; margin-top:8px; }
+  .nurStrom { display:none; }
+  body.strom .nurStrom { display:block; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>💧 Wasserzähler</h1>
+    <h1>🏠 Hausverbrauch</h1>
     <button id="reload" type="button">↻ Aktualisieren</button>
   </header>
+
+  <div class="tabs">
+    <button data-m="strom" class="aktiv">⚡ Strom</button>
+    <button data-m="gas">🔥 Gas</button>
+    <button data-m="wasser">💧 Wasser</button>
+  </div>
 
   <div class="card">
     <div class="muted">Aktueller Zählerstand</div>
@@ -53,83 +62,127 @@
     <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div></div>
   </div>
 
-  <div class="card"><div class="muted">Tagesverbrauch – letzte 30 Tage (Liter)</div><div class="chart"><canvas id="cTage"></canvas></div></div>
-  <div class="card"><div class="muted">Monatsverbrauch – letzte 12 Monate (m³)</div><div class="chart"><canvas id="cMonate"></canvas></div></div>
+  <div class="card nurStrom">
+    <div class="muted">Aktuelle Leistung: <b id="leistung">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
+    <div class="chart"><canvas id="cLeistung"></canvas></div>
+  </div>
+
+  <div class="card"><div class="muted" id="tTage">Tagesverbrauch – letzte 30 Tage</div><div class="chart"><canvas id="cTage"></canvas></div></div>
+  <div class="card"><div class="muted" id="tMonate">Monatsverbrauch – letzte 12 Monate</div><div class="chart"><canvas id="cMonate"></canvas></div></div>
 </div>
 
 <script>
-  // Adresse der Apps-Script-WebApp (ohne Schlüssel – der Schlüssel steht nur im Lesezeichen)
-  const API = 'https://script.google.com/macros/s/AKfycbzhpkMh_SM98CTPeatrLI6F0BhOWDux-SCZd08H_gWgY2oU3HsEe4npLG2Z9fj25vQz/exec';
+// URL des veröffentlichten Apps Scripts (Bereitstellung als Web-App) hier eintragen
+const API = '';
 
-  // Schlüssel aus der URL (?v=...) holen, sonst aus dem Browser-Speicher
-  let KEY = new URLSearchParams(location.search).get('v') || '';
+const MEDIEN = {
+  strom:  { feld:'import', einheit:'kWh', faktor:1,    dez:2, standEinheit:'kWh', standDez:3, farbe:'#e6a700' },
+  gas:    { feld:'gas',    einheit:'m³',  faktor:1,    dez:2, standEinheit:'m³',  standDez:3, farbe:'#d9534f' },
+  wasser: { feld:'wasser', einheit:'L',   faktor:1000, dez:0, standEinheit:'m³',  standDez:3, farbe:'#1f6fd1' }
+};
+let daten = null, medium = 'strom', charts = {};
+
+const $ = id => document.getElementById(id);
+const fmt = (v, d) => (v === null || v === undefined || isNaN(v)) ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits:d, maximumFractionDigits:d });
+const iso = d => d.toLocaleDateString('sv-SE'); // yyyy-mm-dd in lokaler Zeit
+
+// Tagesverbrauch = Endstand Tag minus Endstand Vortag
+function tagesVerbrauch(feld) {
+  const t = daten.tage, out = {};
+  for (let i = 1; i < t.length; i++) {
+    const a = t[i - 1][feld], b = t[i][feld];
+    if (!isNaN(a) && !isNaN(b)) out[t[i].datum] = b - a;
+  }
+  return out;
+}
+
+function chart(id, typ, labels, werte, farbe, label) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), {
+    type: typ,
+    data: { labels, datasets: [{ label, data: werte, backgroundColor: farbe, borderColor: farbe, pointRadius: 0, tension: .3, fill: false }] },
+    options: { maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+  });
+}
+
+function anzeigen() {
+  if (!daten) return;
+  const m = MEDIEN[medium];
+  document.body.classList.toggle('strom', medium === 'strom');
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('aktiv', b.dataset.m === medium));
+
+  const letzte = daten.messungen[daten.messungen.length - 1];
+  if (!letzte) { $('zeit').textContent = 'Noch keine Daten im Sheet.'; return; }
+
+  const zeit = new Date(letzte.zeit);
+  $('stand').textContent = fmt(Number(letzte[m.feld]), m.standDez) + ' ' + m.standEinheit;
+  $('zeit').textContent = 'Stand: ' + zeit.toLocaleString('de-DE');
+  const alterMin = (Date.now() - zeit) / 60000;
+  $('warn').textContent = alterMin > 45 ? '⚠ Letzter Wert ist älter als ' + Math.round(alterMin) + ' Minuten – Bridge prüfen.' : '';
+
+  const tv = tagesVerbrauch(m.feld);
+  const heute = new Date(), gestern = new Date(Date.now() - 864e5);
+  $('heute').textContent = fmt((tv[iso(heute)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
+  $('gestern').textContent = fmt((tv[iso(gestern)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
+
+  // Monat
+  const monatPrefix = iso(heute).slice(0, 7);
+  const monatSumme = Object.entries(tv).filter(([d]) => d.startsWith(monatPrefix)).reduce((s, [, v]) => s + v, 0);
+  $('monat').textContent = fmt(monatSumme * m.faktor, m.dez) + ' ' + m.einheit;
+
+  // letzte 30 Tage
+  const labels = [], werte = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = iso(new Date(Date.now() - i * 864e5));
+    labels.push(d.slice(8, 10) + '.' + d.slice(5, 7) + '.');
+    werte.push(tv[d] !== undefined ? +(tv[d] * m.faktor).toFixed(m.dez) : null);
+  }
+  const vorhanden = werte.filter(v => v !== null);
+  $('schnitt').textContent = vorhanden.length ? fmt(vorhanden.reduce((a, b) => a + b, 0) / vorhanden.length, m.dez) + ' ' + m.einheit : '–';
+  $('tTage').textContent = 'Tagesverbrauch – letzte 30 Tage (' + m.einheit + ')';
+  chart('cTage', 'bar', labels, werte, m.farbe, m.einheit);
+
+  // letzte 12 Monate
+  const mon = {};
+  Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); mon[k] = (mon[k] || 0) + v; });
+  const mLabels = [], mWerte = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(heute.getFullYear(), heute.getMonth() - i, 1);
+    const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    mLabels.push(d.toLocaleDateString('de-DE', { month:'short', year:'2-digit' }));
+    mWerte.push(mon[k] !== undefined ? +(mon[k] * m.faktor).toFixed(m.dez) : null);
+  }
+  $('tMonate').textContent = 'Monatsverbrauch – letzte 12 Monate (' + m.einheit + ')';
+  chart('cMonate', 'bar', mLabels, mWerte, m.farbe, m.einheit);
+
+  // Strom-Extras
+  if (medium === 'strom') {
+    $('leistung').textContent = fmt(Number(letzte.leistung), 0) + ' W';
+    const ev = tagesVerbrauch('export');
+    $('einspeisung').textContent = fmt(ev[iso(heute)] ?? NaN, 2) + ' kWh';
+    chart('cLeistung', 'line',
+      daten.messungen.map(x => new Date(x.zeit).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' })),
+      daten.messungen.map(x => Number(x.leistung)), m.farbe, 'W');
+  }
+}
+
+async function laden() {
+  if (!API) { $('zeit').textContent = 'API-URL fehlt in index.html.'; return; }
+  $('zeit').textContent = 'lädt …';
   try {
-    if (KEY) localStorage.setItem('wz_key', KEY); else KEY = localStorage.getItem('wz_key') || '';
-  } catch (e) {}
-
-  let chTage = null, chMonate = null;
-  const $ = id => document.getElementById(id);
-  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-
-  const liter = m3 => m3 === null || m3 === undefined ? '–' : (m3 * 1000).toLocaleString('de-DE', { maximumFractionDigits: 0 }) + ' L';
-  const kubik = m3 => m3 === null || m3 === undefined ? '–' : m3.toLocaleString('de-DE', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' m³';
-
-  function zeigeStand(v) {
-    if (v === null || v === undefined) return '–';
-    const [ganz, dez] = v.toFixed(4).split('.');
-    return ganz.padStart(5, '0') + ',<span class="dez">' + dez + '</span> m³';
+    const r = await fetch(API, { cache:'no-store' });
+    daten = await r.json();
+    if (!daten.ok) throw new Error('Antwort ungültig');
+    anzeigen();
+  } catch (e) {
+    $('zeit').textContent = 'Fehler beim Laden: ' + e.message;
   }
+}
 
-  function render(d) {
-    $('stand').innerHTML = zeigeStand(d.stand);
-    $('zeit').textContent = d.standZeit ? 'Ablesung: ' + new Date(d.standZeit).toLocaleString('de-DE') : 'Noch keine Daten';
-
-    let warn = '';
-    if (d.empfangen) {
-      const alterMin = (Date.now() - d.empfangen) / 60000;
-      if (alterMin > d.maxAlterMin) warn = '⚠ Letzte Meldung der Kamera vor ' + Math.round(alterMin) + ' Minuten.';
-    }
-    if (d.status && d.status !== 'OK') warn += (warn ? ' ' : '⚠ ') + 'Letzte Ablesung fehlerhaft: ' + d.status;
-    $('warn').textContent = warn;
-
-    $('heute').textContent = liter(d.heute);
-    $('gestern').textContent = liter(d.gestern);
-    $('monat').textContent = kubik(d.monat);
-    $('schnitt').textContent = liter(d.schnitt30);
-
-    const opt = {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: css('--muted') }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: css('--muted') }, grid: { color: css('--grid') } }
-      }
-    };
-    if (chTage) chTage.destroy();
-    if (chMonate) chMonate.destroy();
-    chTage = new Chart($('cTage'), { type: 'bar', options: opt, data: {
-      labels: d.tage.map(t => t.d.slice(8, 10) + '.' + t.d.slice(5, 7) + '.'),
-      datasets: [{ data: d.tage.map(t => Math.round(t.v * 1000)), backgroundColor: css('--accent'), borderRadius: 4 }] } });
-    chMonate = new Chart($('cMonate'), { type: 'bar', options: opt, data: {
-      labels: d.monate.map(m => m.m.slice(5, 7) + '/' + m.m.slice(2, 4)),
-      datasets: [{ data: d.monate.map(m => Math.round(m.v * 1000) / 1000), backgroundColor: css('--accent2'), borderRadius: 4 }] } });
-  }
-
-  async function laden() {
-    if (!KEY) { $('zeit').textContent = 'Kein Zugriffsschlüssel – Seite mit ?v=SCHLÜSSEL öffnen.'; return; }
-    try {
-      const r = await fetch(API + '?format=json&v=' + encodeURIComponent(KEY), { cache: 'no-store' });
-      const d = await r.json();
-      if (d.error) throw new Error(d.error);
-      render(d);
-    } catch (err) {
-      $('zeit').textContent = 'Fehler beim Laden: ' + err.message;
-    }
-  }
-
-  $('reload').addEventListener('click', laden);
-  laden();
-  setInterval(laden, 5 * 60 * 1000); // alle 5 Minuten neu laden
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { medium = b.dataset.m; anzeigen(); });
+$('reload').onclick = laden;
+laden();
+setInterval(laden, 5 * 60 * 1000);
 </script>
 </body>
 </html>
