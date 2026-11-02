@@ -25,13 +25,14 @@ const char* WRITE_KEY  = "GLEICHER_KEY_WIE_IM_APPS_SCRIPT";
 const unsigned long INTERVALL_MS = 15UL * 60UL * 1000UL;  // 15 Minuten
 // --------------------------------------------
 
-const int FW_VERSION = 4;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 5;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
 
 String scriptUrl, writeKey;          // aktive Werte (aus Code oder NVS)
 unsigned long letztesOta = 0;
+unsigned long letzterVersandMs = 0;
 WebServer server(80);   // Live-Anzeige: http://hausverbrauch.local bzw. IP der ESP32-CAM
 
 // Live-Seite: holt jede Sekunde /live; nichts wird gespeichert
@@ -52,12 +53,15 @@ th{color:var(--m);font-weight:600;font-size:14px}tr+tr td{border-top:1px solid r
 <tr><td>L1</td><td id="w1">&ndash;</td><td id="v1">&ndash;</td><td id="a1">&ndash;</td></tr>
 <tr><td>L2</td><td id="w2">&ndash;</td><td id="v2">&ndash;</td><td id="a2">&ndash;</td></tr>
 <tr><td>L3</td><td id="w3">&ndash;</td><td id="v3">&ndash;</td><td id="a3">&ndash;</td></tr></table></div>
-<div class="c"><div class="m">Firmware <span id="fw">&ndash;</span></div><div style="margin-top:8px"><button id="upd" type="button">Update pr&uuml;fen</button></div><div class="m" id="us" style="margin-top:8px"></div></div></div>
+<div class="c"><div class="m">Firmware <span id="fw">&ndash;</span> &middot; <span id="dg"></span></div><div style="margin-top:8px"><button id="upd" type="button">Update pr&uuml;fen</button></div><div class="m" id="us" style="margin-top:8px"></div></div></div>
 <script>const $=i=>document.getElementById(i),f=(v,d)=>v==null?'&ndash;':Number(v).toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
-async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await r.json();if(!d.ok)throw 0;
+async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await r.json();
+$('fw').textContent='v'+d.fw;
+$('dg').textContent='WLAN '+d.rssi+' dBm · l\u00e4uft seit '+d.laufzeit+' min · letzter Versand '+(d.versand<0?'noch keiner':'vor '+d.versand+' min')+' (Script '+d.script+')';
+if(!d.ok){$('s').textContent='HomeWizard-Fehler '+d.hw+(d.hwFehler?' ('+d.hwFehler+')':'');}else{
 $('p').innerHTML=f(d.p,0)+' W';$('p').style.color=d.p<0?'var(--g)':'var(--a)';
 for(const i of[1,2,3]){$('w'+i).innerHTML=f(d['w'+i],0)+' W';$('v'+i).innerHTML=f(d['v'+i],1)+' V';$('a'+i).innerHTML=f(d['a'+i],2)+' A';}
-$('fw').textContent='v'+d.fw;$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}catch(e){$('s').textContent='HomeWizard nicht erreichbar';}
+$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}}catch(e){$('s').textContent='ESP32-CAM nicht erreichbar';}
 setTimeout(hol,1000);}hol();
 $('upd').onclick=async()=>{$('upd').disabled=true;$('us').textContent='pr\u00fcfe \u2026';try{const r=await fetch('/update',{method:'POST'}),d=await r.json();$('us').textContent=d.update?('Update auf v'+d.verfuegbar+' wird installiert. Neustart in ca. 1 Minute, dann Seite neu laden.'):(d.verfuegbar>0?'Aktuell (v'+d.installiert+'), kein Update verf\u00fcgbar.':'GitHub nicht erreichbar.');}catch(e){$('us').textContent='Fehler: '+e;}$('upd').disabled=false;};</script></body></html>)HTML";
 
@@ -67,6 +71,12 @@ void seiteIcon() {
   server.sendHeader("Cache-Control", "max-age=86400");
   server.send_P(200, "image/png", (const char*)ICON_PNG, ICON_PNG_LEN);
 }
+
+// Diagnose (Anzeige auf der Live-Seite)
+int    diagHwCode = 0;        // letzter HTTP-Code vom HomeWizard (negativ = Verbindungsfehler)
+String diagHwFehler = "";
+int    diagScriptCode = 0;    // letzter HTTP-Code vom Apps Script
+String diagLetzterVersand = "noch keiner";
 
 bool updateAnstehend = false;  // vom Knopf "Update prüfen" gesetzt, ausgeführt in loop()
 
@@ -82,22 +92,37 @@ void seiteUpdate() {
 }
 
 void datenLive() {
+  JsonDocument out;
+  out["fw"]      = FW_VERSION;
+  out["rssi"]    = WiFi.RSSI();
+  out["laufzeit"] = millis() / 60000;  // Minuten seit Start
+  out["script"]  = diagScriptCode;
+  out["versand"] = letzterVersandMs ? (long)((millis() - letzterVersandMs) / 60000) : -1;
+
   HTTPClient http;
   http.begin(HW_URL);
-  http.setTimeout(3000);
+  http.setTimeout(5000);
   int code = http.GET();
-  if (code != 200) { http.end(); server.send(502, "application/json", "{\"ok\":false}"); return; }
-  JsonDocument hw;
-  DeserializationError err = deserializeJson(hw, http.getString());
+  diagHwCode = code;
+  diagHwFehler = code < 0 ? http.errorToString(code) : "";
+  out["hw"] = code;
+  out["hwFehler"] = diagHwFehler;
+  if (code == 200) {
+    JsonDocument hw;
+    DeserializationError err = deserializeJson(hw, http.getString());
+    if (err) {
+      out["ok"] = false; out["hwFehler"] = String("JSON: ") + err.c_str();
+    } else {
+      out["ok"] = true;
+      out["p"]  = hw["active_power_w"];
+      out["w1"] = hw["active_power_l1_w"];   out["w2"] = hw["active_power_l2_w"];   out["w3"] = hw["active_power_l3_w"];
+      out["v1"] = hw["active_voltage_l1_v"]; out["v2"] = hw["active_voltage_l2_v"]; out["v3"] = hw["active_voltage_l3_v"];
+      out["a1"] = hw["active_current_l1_a"]; out["a2"] = hw["active_current_l2_a"]; out["a3"] = hw["active_current_l3_a"];
+    }
+  } else {
+    out["ok"] = false;
+  }
   http.end();
-  if (err) { server.send(502, "application/json", "{\"ok\":false}"); return; }
-  JsonDocument out;
-  out["ok"] = true;
-  out["fw"] = FW_VERSION;
-  out["p"]  = hw["active_power_w"];
-  out["w1"] = hw["active_power_l1_w"];   out["w2"] = hw["active_power_l2_w"];   out["w3"] = hw["active_power_l3_w"];
-  out["v1"] = hw["active_voltage_l1_v"]; out["v2"] = hw["active_voltage_l2_v"]; out["v3"] = hw["active_voltage_l3_v"];
-  out["a1"] = hw["active_current_l1_a"]; out["a2"] = hw["active_current_l2_a"]; out["a3"] = hw["active_current_l3_a"];
   String body;
   serializeJson(out, body);
   server.sendHeader("Cache-Control", "no-store");
@@ -126,6 +151,8 @@ String homewizardLesen() {
   http.begin(HW_URL);
   http.setTimeout(8000);
   int code = http.GET();
+  diagHwCode = code;
+  diagHwFehler = code < 0 ? http.errorToString(code) : "";
   if (code != 200) {
     Serial.printf("HomeWizard Fehler: %d\n", code);
     http.end();
@@ -189,6 +216,7 @@ bool anScriptSenden(const String& body) {
   http.end();
   // Google antwortet nach erfolgreichem Schreiben mit 302 (Weiterleitung) – zählt als Erfolg
   Serial.printf("Apps Script Antwort: %d\n", code);
+  diagScriptCode = code;
   return code == 200 || code == 302;
 }
 
@@ -246,6 +274,8 @@ void ablesen() {
     fehlerInFolge++;
   } else {
     fehlerInFolge = 0;
+    diagLetzterVersand = "vor 0 min";
+    letzterVersandMs = millis();
     Serial.println("Gesendet: " + body);
   }
 
