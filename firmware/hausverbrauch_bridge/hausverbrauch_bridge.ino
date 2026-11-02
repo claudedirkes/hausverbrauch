@@ -14,6 +14,8 @@
 #include <WiFiManager.h>
 #include <Preferences.h>
 #include <HTTPUpdate.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
 
 // ---------- Einstellungen anpassen ----------
 const char* HW_URL     = "http://192.168.178.79/api/v1/data";
@@ -22,13 +24,61 @@ const char* WRITE_KEY  = "GLEICHER_KEY_WIE_IM_APPS_SCRIPT";
 const unsigned long INTERVALL_MS = 15UL * 60UL * 1000UL;  // 15 Minuten
 // --------------------------------------------
 
-const int FW_VERSION = 2;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 3;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
 
 String scriptUrl, writeKey;          // aktive Werte (aus Code oder NVS)
 unsigned long letztesOta = 0;
+WebServer server(80);   // Live-Anzeige: http://hausverbrauch.local bzw. IP der ESP32-CAM
+
+// Live-Seite: holt jede Sekunde /live; nichts wird gespeichert
+const char LIVE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Live-Leistung</title>
+<style>:root{--bg:#f3f6f9;--card:#fff;--t:#1d2733;--m:#6b7785;--a:#e6a700;--g:#2e9d5b}
+@media(prefers-color-scheme:dark){:root{--bg:#10161d;--card:#1a222c;--t:#e6edf3;--m:#8b97a5}}
+body{margin:0;padding:16px;background:var(--bg);color:var(--t);font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+.w{max-width:520px;margin:0 auto}.c{background:var(--card);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.m{color:var(--m);font-size:14px}.big{font-size:52px;font-weight:700;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:8px 4px;text-align:right}th:first-child,td:first-child{text-align:left}
+th{color:var(--m);font-weight:600;font-size:14px}tr+tr td{border-top:1px solid rgba(128,128,128,.2)}</style></head><body><div class="w">
+<h2>&#9889; Live-Leistung</h2>
+<div class="c"><div class="m">Aktuelle Leistung</div><div class="big" id="p">&ndash;</div><div class="m" id="s">verbinde &hellip;</div></div>
+<div class="c"><table><tr><th>Phase</th><th>Leistung</th><th>Spannung</th><th>Strom</th></tr>
+<tr><td>L1</td><td id="w1">&ndash;</td><td id="v1">&ndash;</td><td id="a1">&ndash;</td></tr>
+<tr><td>L2</td><td id="w2">&ndash;</td><td id="v2">&ndash;</td><td id="a2">&ndash;</td></tr>
+<tr><td>L3</td><td id="w3">&ndash;</td><td id="v3">&ndash;</td><td id="a3">&ndash;</td></tr></table></div></div>
+<script>const $=i=>document.getElementById(i),f=(v,d)=>v==null?'&ndash;':Number(v).toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
+async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await r.json();if(!d.ok)throw 0;
+$('p').innerHTML=f(d.p,0)+' W';$('p').style.color=d.p<0?'var(--g)':'var(--a)';
+for(const i of[1,2,3]){$('w'+i).innerHTML=f(d['w'+i],0)+' W';$('v'+i).innerHTML=f(d['v'+i],1)+' V';$('a'+i).innerHTML=f(d['a'+i],2)+' A';}
+$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}catch(e){$('s').textContent='HomeWizard nicht erreichbar';}
+setTimeout(hol,1000);}hol();</script></body></html>)HTML";
+
+void seiteLive() { server.send_P(200, "text/html; charset=utf-8", LIVE_HTML); }
+
+void datenLive() {
+  HTTPClient http;
+  http.begin(HW_URL);
+  http.setTimeout(3000);
+  int code = http.GET();
+  if (code != 200) { http.end(); server.send(502, "application/json", "{\"ok\":false}"); return; }
+  JsonDocument hw;
+  DeserializationError err = deserializeJson(hw, http.getString());
+  http.end();
+  if (err) { server.send(502, "application/json", "{\"ok\":false}"); return; }
+  JsonDocument out;
+  out["ok"] = true;
+  out["p"]  = hw["active_power_w"];
+  out["w1"] = hw["active_power_l1_w"];   out["w2"] = hw["active_power_l2_w"];   out["w3"] = hw["active_power_l3_w"];
+  out["v1"] = hw["active_voltage_l1_v"]; out["v2"] = hw["active_voltage_l2_v"]; out["v3"] = hw["active_voltage_l3_v"];
+  out["a1"] = hw["active_current_l1_a"]; out["a2"] = hw["active_current_l2_a"]; out["a3"] = hw["active_current_l3_a"];
+  String body;
+  serializeJson(out, body);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", body);
+}
 
 unsigned long letzterLauf = 0;
 bool ersterLauf = true;
@@ -191,6 +241,12 @@ void setup() {
   zugangLaden();
   otaPruefen();
   letztesOta = millis();
+
+  if (MDNS.begin("hausverbrauch")) MDNS.addService("http", "tcp", 80);
+  server.on("/", seiteLive);
+  server.on("/live", datenLive);
+  server.begin();
+  Serial.println("Live-Anzeige: http://hausverbrauch.local bzw. http://" + WiFi.localIP().toString());
 }
 
 void loop() {
@@ -204,5 +260,6 @@ void loop() {
     wlanVerbinden();
     if (WiFi.status() == WL_CONNECTED) otaPruefen();
   }
-  delay(1000);
+  server.handleClient();
+  delay(5);
 }
