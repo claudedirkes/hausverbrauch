@@ -59,6 +59,12 @@ String homewizardLesen() {
   out["l1_w"]             = hw["active_power_l1_w"];
   out["l2_w"]             = hw["active_power_l2_w"];
   out["l3_w"]             = hw["active_power_l3_w"];
+  out["l1_v"]             = hw["active_voltage_l1_v"];
+  out["l2_v"]             = hw["active_voltage_l2_v"];
+  out["l3_v"]             = hw["active_voltage_l3_v"];
+  out["l1_a"]             = hw["active_current_l1_a"];
+  out["l2_a"]             = hw["active_current_l2_a"];
+  out["l3_a"]             = hw["active_current_l3_a"];
   out["gas_m3"]           = hw["total_gas_m3"];
 
   // Wasser steckt im Array "external" mit type = water_meter

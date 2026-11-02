@@ -4,15 +4,15 @@
 const WRITE_KEY = 'HIER_EIGENEN_KEY_EINTRAGEN';   // gleicher Wert wie WRITE_KEY in der Firmware
 const TZ = 'Europe/Luxembourg';
 const KOPF_AKTUELL = ['Empfangen', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Leistung (W)',
-                      'L1 (W)', 'L2 (W)', 'L3 (W)', 'Gas (m³)', 'Wasser (m³)'];
+                      'L1 (W)', 'L2 (W)', 'L3 (W)', 'Gas (m³)', 'Wasser (m³)',
+                      'L1 (V)', 'L2 (V)', 'L3 (V)', 'L1 (A)', 'L2 (A)', 'L3 (A)'];
 const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)'];
 
-// Einmal manuell ausführen: setzt die Kopfzeilen (löscht vorhandene Inhalte der beiden Blätter!)
+// Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
   const ss = SpreadsheetApp.getActive();
   [['Aktuell', KOPF_AKTUELL], ['Tage', KOPF_TAGE]].forEach(([name, kopf]) => {
     const sh = ss.getSheetByName(name) || ss.insertSheet(name);
-    sh.clear();
     sh.getRange(1, 1, 1, kopf.length).setValues([kopf]).setFontWeight('bold');
     sh.setFrozenRows(1);
   });
@@ -31,7 +31,8 @@ function doPost(e) {
 
     ss.getSheetByName('Aktuell').appendRow([
       jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
-      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3)
+      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3),
+      zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a)
     ]);
 
     // Tagesblatt: eine Zeile pro Tag mit dem jeweils letzten Zählerstand (Endstand)
@@ -61,7 +62,7 @@ function doGet() {
   // letzte 96 Messungen (= 24 h) für Leistungsverlauf
   const nA = Math.max(0, akt.getLastRow() - 1);
   const anzA = Math.min(nA, 96);
-  const messungen = anzA ? akt.getRange(akt.getLastRow() - anzA + 1, 1, anzA, 9).getValues() : [];
+  const messungen = anzA ? akt.getRange(akt.getLastRow() - anzA + 1, 1, anzA, KOPF_AKTUELL.length).getValues() : [];
 
   // bis zu 400 Tage
   const nT = Math.max(0, tage.getLastRow() - 1);
@@ -72,7 +73,8 @@ function doGet() {
     ok: true,
     messungen: messungen.map(r => ({
       zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
-      import: r[1], export: r[2], leistung: r[3], l1: r[4], l2: r[5], l3: r[6], gas: r[7], wasser: r[8]
+      import: r[1], export: r[2], leistung: r[3], l1: r[4], l2: r[5], l3: r[6], gas: r[7], wasser: r[8],
+      u1: r[9], u2: r[10], u3: r[11], i1: r[12], i2: r[13], i3: r[14]
     })),
     tage: tageWerte.map(r => ({
       datum: r[0],
