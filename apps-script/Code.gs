@@ -8,10 +8,10 @@ const KOPF_AKTUELL = ['Empfangen', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)
                       'L1 (V)', 'L2 (V)', 'L3 (V)', 'L1 (A)', 'L2 (A)', 'L3 (A)',
                       'Gas abgelesen', 'Wasser abgelesen',
                       'Einbrüche L1', 'Einbrüche L2', 'Einbrüche L3',
-                      'Überspannung L1', 'Überspannung L2', 'Überspannung L3', 'Stromausfälle'];
-const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)',
-                   'Ø Außentemp. Diekirch (°C)'];
+                      'Überspannung L1', 'Überspannung L2', 'Überspannung L3', 'Stromausfälle',
+                      'Außentemp. Diekirch (°C)'];
 const LAT = 49.868, LON = 6.159;   // Diekirch
+const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)'];
 
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
@@ -20,34 +20,6 @@ function einrichten() {
     const sh = ss.getSheetByName(name) || ss.insertSheet(name);
     sh.getRange(1, 1, 1, kopf.length).setValues([kopf]).setFontWeight('bold');
     sh.setFrozenRows(1);
-  });
-  temperaturNachtragen();   // füllt fehlende Tagestemperaturen nach (fragt beim 1. Mal nach Berechtigung)
-}
-
-// Tagesmittel der Außentemperatur (Open-Meteo, Diekirch) für alle abgeschlossenen Tage ohne Wert eintragen
-function temperaturNachtragen() {
-  const tage = SpreadsheetApp.getActive().getSheetByName('Tage');
-  const n = tage.getLastRow() - 1;
-  if (n < 1) return;
-  const heute = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
-  const werte = tage.getRange(2, 1, n, 6).getDisplayValues();
-  const fehlend = werte.map((r, i) => ({ datum: r[0], zeile: i + 2, leer: r[5] === '' }))
-                       .filter(x => x.leer && x.datum && x.datum < heute);
-  if (!fehlend.length) return;
-
-  const temp = {};
-  const holen = url => {
-    const j = JSON.parse(UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText());
-    if (j.daily) j.daily.time.forEach((t, i) => { if (j.daily.temperature_2m_mean[i] !== null) temp[t] = j.daily.temperature_2m_mean[i]; });
-  };
-  const basis = '?latitude=' + LAT + '&longitude=' + LON + '&daily=temperature_2m_mean&timezone=' + encodeURIComponent(TZ);
-  holen('https://api.open-meteo.com/v1/forecast' + basis + '&past_days=92&forecast_days=1');
-  const aelter = fehlend.filter(x => temp[x.datum] === undefined).map(x => x.datum).sort();
-  if (aelter.length) {
-    holen('https://archive-api.open-meteo.com/v1/archive' + basis + '&start_date=' + aelter[0] + '&end_date=' + aelter[aelter.length - 1]);
-  }
-  fehlend.forEach(x => {
-    if (temp[x.datum] !== undefined) tage.getRange(x.zeile, 6).setValue(Math.round(temp[x.datum] * 10) / 10);
   });
 }
 
@@ -68,6 +40,7 @@ function doPost(e) {
     const gw = props.getProperty('gwStunde') !== stunde;
     if (gw) props.setProperty('gwStunde', stunde);
     const nurGW = v => gw ? v : '';
+    const temp = gw ? aussenTemperatur() : '';   // Außentemperatur stündlich zusammen mit Gas
 
     ss.getSheetByName('Aktuell').appendRow([
       jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
@@ -75,12 +48,11 @@ function doPost(e) {
       zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a),
       nurGW(zeitstempel(d.gas_ts)), nurGW(zeitstempel(d.wasser_ts)),
       zahl(d.sag_l1), zahl(d.sag_l2), zahl(d.sag_l3),
-      zahl(d.swell_l1), zahl(d.swell_l2), zahl(d.swell_l3), zahl(d.stromausfall)
+      zahl(d.swell_l1), zahl(d.swell_l2), zahl(d.swell_l3), zahl(d.stromausfall), temp
     ]);
 
     // Tagesblatt: eine Zeile pro Tag mit dem jeweils letzten Zählerstand (Endstand)
     const tage = ss.getSheetByName('Tage');
-    let neuerTag = false;
     const datum = Utilities.formatDate(jetzt, TZ, 'yyyy-MM-dd');
     const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
     const letzte = tage.getLastRow();
@@ -95,10 +67,7 @@ function doPost(e) {
       tage.appendRow(zeile);
       tage.getRange(tage.getLastRow(), 1).setNumberFormat('@');  // Datum als Text speichern
       tage.getRange(tage.getLastRow(), 1).setValue(datum);
-      neuerTag = true;
     }
-    // Bei Tageswechsel die Temperatur des Vortags nachtragen (Fehler hier dürfen das Speichern nicht stoppen)
-    if (neuerTag) { try { temperaturNachtragen(); } catch (err) { console.log('Temperatur: ' + err); } }
   } finally {
     lock.releaseLock();
   }
@@ -118,7 +87,7 @@ function doGet() {
   // bis zu 400 Tage
   const nT = Math.max(0, tage.getLastRow() - 1);
   const anzT = Math.min(nT, 400);
-  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 6).getDisplayValues() : [];
+  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 5).getDisplayValues() : [];
 
   return antwort({
     ok: true,
@@ -128,15 +97,15 @@ function doGet() {
       u1: r[9], u2: r[10], u3: r[11], i1: r[12], i2: r[13], i3: r[14],
       gasZeit: r[15] instanceof Date ? r[15].toISOString() : r[15],
       wasserZeit: r[16] instanceof Date ? r[16].toISOString() : r[16],
-      sag1: r[17], sag2: r[18], sag3: r[19], swell1: r[20], swell2: r[21], swell3: r[22], ausfaelle: r[23]
+      sag1: r[17], sag2: r[18], sag3: r[19], swell1: r[20], swell2: r[21], swell3: r[22], ausfaelle: r[23],
+      temp: r[24]
     })),
     tage: tageWerte.map(r => ({
       datum: r[0],
       import: parseFloat(String(r[1]).replace(',', '.')),
       export: parseFloat(String(r[2]).replace(',', '.')),
       gas: parseFloat(String(r[3]).replace(',', '.')),
-      wasser: parseFloat(String(r[4]).replace(',', '.')),
-      temp: parseFloat(String(r[5]).replace(',', '.'))
+      wasser: parseFloat(String(r[4]).replace(',', '.'))
     }))
   });
 }
@@ -146,6 +115,24 @@ function zeitstempel(v) {
   if (v === undefined || v === null || v === '') return '';
   const t = String(v).padStart(12, '0');
   return Utilities.parseDate(t, TZ, 'yyMMddHHmmss');
+}
+
+// Aktuelle Außentemperatur Diekirch (Open-Meteo). Bei Fehler leer, damit das Speichern weiterläuft.
+function aussenTemperatur() {
+  try {
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + LAT + '&longitude=' + LON +
+                '&current=temperature_2m&timezone=' + encodeURIComponent(TZ);
+    const j = JSON.parse(UrlFetchApp.fetch(url, { muteHttpExceptions: true }).getContentText());
+    return (j.current && j.current.temperature_2m !== null) ? j.current.temperature_2m : '';
+  } catch (err) {
+    console.log('Temperatur: ' + err);
+    return '';
+  }
+}
+
+// Einmal manuell ausführen, um die Berechtigung für externe Abrufe zu erteilen und den Abruf zu testen
+function testTemperatur() {
+  console.log('Außentemperatur Diekirch: ' + aussenTemperatur() + ' °C');
 }
 
 function antwort(obj) {
