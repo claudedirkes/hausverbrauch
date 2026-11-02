@@ -65,12 +65,21 @@ String homewizardLesen() {
   out["l1_a"]             = hw["active_current_l1_a"];
   out["l2_a"]             = hw["active_current_l2_a"];
   out["l3_a"]             = hw["active_current_l3_a"];
+  out["sag_l1"]           = hw["voltage_sag_l1_count"];
+  out["sag_l2"]           = hw["voltage_sag_l2_count"];
+  out["sag_l3"]           = hw["voltage_sag_l3_count"];
+  out["swell_l1"]         = hw["voltage_swell_l1_count"];
+  out["swell_l2"]         = hw["voltage_swell_l2_count"];
+  out["swell_l3"]         = hw["voltage_swell_l3_count"];
+  out["stromausfall"]     = hw["any_power_fail_count"];
   out["gas_m3"]           = hw["total_gas_m3"];
+  out["gas_ts"]           = hw["gas_timestamp"];   // Ablesezeit Gas, Format JJMMTThhmmss
 
   // Wasser steckt im Array "external" mit type = water_meter
   for (JsonObject ext : hw["external"].as<JsonArray>()) {
     if (ext["type"] == "water_meter") {
       out["wasser_m3"] = ext["value"];
+      out["wasser_ts"] = ext["timestamp"];          // Ablesezeit Wasser, Format JJMMTThhmmss
       break;
     }
   }
