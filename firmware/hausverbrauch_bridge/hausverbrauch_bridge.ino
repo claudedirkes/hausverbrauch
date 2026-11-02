@@ -16,6 +16,7 @@
 #include <HTTPUpdate.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include "icon_png.h"
 
 // ---------- Einstellungen anpassen ----------
 const char* HW_URL     = "http://192.168.178.79/api/v1/data";
@@ -24,7 +25,7 @@ const char* WRITE_KEY  = "GLEICHER_KEY_WIE_IM_APPS_SCRIPT";
 const unsigned long INTERVALL_MS = 15UL * 60UL * 1000UL;  // 15 Minuten
 // --------------------------------------------
 
-const int FW_VERSION = 3;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 4;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -36,27 +37,49 @@ WebServer server(80);   // Live-Anzeige: http://hausverbrauch.local bzw. IP der 
 // Live-Seite: holt jede Sekunde /live; nichts wird gespeichert
 const char LIVE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Live-Leistung</title>
+<link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="Live">
 <style>:root{--bg:#f3f6f9;--card:#fff;--t:#1d2733;--m:#6b7785;--a:#e6a700;--g:#2e9d5b}
 @media(prefers-color-scheme:dark){:root{--bg:#10161d;--card:#1a222c;--t:#e6edf3;--m:#8b97a5}}
 body{margin:0;padding:16px;background:var(--bg);color:var(--t);font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
 .w{max-width:520px;margin:0 auto}.c{background:var(--card);border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .m{color:var(--m);font-size:14px}.big{font-size:52px;font-weight:700;font-variant-numeric:tabular-nums}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}td,th{padding:8px 4px;text-align:right}th:first-child,td:first-child{text-align:left}
+button{background:none;border:1px solid rgba(128,128,128,.4);color:var(--t);border-radius:8px;padding:8px 12px;font-size:15px;cursor:pointer}
 th{color:var(--m);font-weight:600;font-size:14px}tr+tr td{border-top:1px solid rgba(128,128,128,.2)}</style></head><body><div class="w">
 <h2>&#9889; Live-Leistung</h2>
 <div class="c"><div class="m">Aktuelle Leistung</div><div class="big" id="p">&ndash;</div><div class="m" id="s">verbinde &hellip;</div></div>
 <div class="c"><table><tr><th>Phase</th><th>Leistung</th><th>Spannung</th><th>Strom</th></tr>
 <tr><td>L1</td><td id="w1">&ndash;</td><td id="v1">&ndash;</td><td id="a1">&ndash;</td></tr>
 <tr><td>L2</td><td id="w2">&ndash;</td><td id="v2">&ndash;</td><td id="a2">&ndash;</td></tr>
-<tr><td>L3</td><td id="w3">&ndash;</td><td id="v3">&ndash;</td><td id="a3">&ndash;</td></tr></table></div></div>
+<tr><td>L3</td><td id="w3">&ndash;</td><td id="v3">&ndash;</td><td id="a3">&ndash;</td></tr></table></div>
+<div class="c"><div class="m">Firmware <span id="fw">&ndash;</span></div><div style="margin-top:8px"><button id="upd" type="button">Update pr&uuml;fen</button></div><div class="m" id="us" style="margin-top:8px"></div></div></div>
 <script>const $=i=>document.getElementById(i),f=(v,d)=>v==null?'&ndash;':Number(v).toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
 async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await r.json();if(!d.ok)throw 0;
 $('p').innerHTML=f(d.p,0)+' W';$('p').style.color=d.p<0?'var(--g)':'var(--a)';
 for(const i of[1,2,3]){$('w'+i).innerHTML=f(d['w'+i],0)+' W';$('v'+i).innerHTML=f(d['v'+i],1)+' V';$('a'+i).innerHTML=f(d['a'+i],2)+' A';}
-$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}catch(e){$('s').textContent='HomeWizard nicht erreichbar';}
-setTimeout(hol,1000);}hol();</script></body></html>)HTML";
+$('fw').textContent='v'+d.fw;$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}catch(e){$('s').textContent='HomeWizard nicht erreichbar';}
+setTimeout(hol,1000);}hol();
+$('upd').onclick=async()=>{$('upd').disabled=true;$('us').textContent='pr\u00fcfe \u2026';try{const r=await fetch('/update',{method:'POST'}),d=await r.json();$('us').textContent=d.update?('Update auf v'+d.verfuegbar+' wird installiert. Neustart in ca. 1 Minute, dann Seite neu laden.'):(d.verfuegbar>0?'Aktuell (v'+d.installiert+'), kein Update verf\u00fcgbar.':'GitHub nicht erreichbar.');}catch(e){$('us').textContent='Fehler: '+e;}$('upd').disabled=false;};</script></body></html>)HTML";
 
 void seiteLive() { server.send_P(200, "text/html; charset=utf-8", LIVE_HTML); }
+
+void seiteIcon() {
+  server.sendHeader("Cache-Control", "max-age=86400");
+  server.send_P(200, "image/png", (const char*)ICON_PNG, ICON_PNG_LEN);
+}
+
+bool updateAnstehend = false;  // vom Knopf "Update prüfen" gesetzt, ausgeführt in loop()
+
+int verfuegbareVersion();      // weiter unten definiert
+
+// Knopf "Update prüfen": Version auf GitHub abfragen, Antwort senden, Installation danach in loop()
+void seiteUpdate() {
+  int neu = verfuegbareVersion();
+  bool update = neu > FW_VERSION;
+  if (update) updateAnstehend = true;
+  server.send(200, "application/json",
+    String("{\"ok\":true,\"installiert\":") + FW_VERSION + ",\"verfuegbar\":" + neu + ",\"update\":" + (update ? "true" : "false") + "}");
+}
 
 void datenLive() {
   HTTPClient http;
@@ -70,6 +93,7 @@ void datenLive() {
   if (err) { server.send(502, "application/json", "{\"ok\":false}"); return; }
   JsonDocument out;
   out["ok"] = true;
+  out["fw"] = FW_VERSION;
   out["p"]  = hw["active_power_w"];
   out["w1"] = hw["active_power_l1_w"];   out["w2"] = hw["active_power_l2_w"];   out["w3"] = hw["active_power_l3_w"];
   out["v1"] = hw["active_voltage_l1_v"]; out["v2"] = hw["active_voltage_l2_v"]; out["v3"] = hw["active_voltage_l3_v"];
@@ -184,25 +208,33 @@ void zugangLaden() {
 }
 
 // Neue Firmware auf GitHub? Dann installieren und neu starten.
-void otaPruefen() {
+// Versionsnummer aus version.txt auf GitHub (0 bei Fehler); ?t= umgeht den Cache
+int verfuegbareVersion() {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  http.begin(client, OTA_VERSION_URL);
+  http.begin(client, String(OTA_VERSION_URL) + "?t=" + millis());
   http.setTimeout(10000);
   int code = http.GET();
   int neu = (code == 200) ? http.getString().toInt() : 0;
   http.end();
   Serial.printf("OTA: installiert %d, verfügbar %d (HTTP %d)\n", FW_VERSION, neu, code);
-  if (neu <= FW_VERSION) return;
+  return neu;
+}
 
+void otaInstallieren() {
   WiFiClientSecure binClient;
   binClient.setInsecure();
   httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return r = httpUpdate.update(binClient, OTA_BIN_URL);
+  t_httpUpdate_return r = httpUpdate.update(binClient, String(OTA_BIN_URL) + "?t=" + millis());
   if (r == HTTP_UPDATE_FAILED) {
     Serial.printf("OTA Fehler: %s\n", httpUpdate.getLastErrorString().c_str());
   }
+}
+
+// Neue Firmware auf GitHub? Dann installieren und neu starten.
+void otaPruefen() {
+  if (verfuegbareVersion() > FW_VERSION) otaInstallieren();
 }
 
 void ablesen() {
@@ -245,6 +277,8 @@ void setup() {
   if (MDNS.begin("hausverbrauch")) MDNS.addService("http", "tcp", 80);
   server.on("/", seiteLive);
   server.on("/live", datenLive);
+  server.on("/apple-touch-icon.png", seiteIcon);
+  server.on("/update", HTTP_POST, seiteUpdate);
   server.begin();
   Serial.println("Live-Anzeige: http://hausverbrauch.local bzw. http://" + WiFi.localIP().toString());
 }
@@ -261,5 +295,10 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) otaPruefen();
   }
   server.handleClient();
+  if (updateAnstehend) {
+    updateAnstehend = false;
+    delay(500);  // Antwort an den Browser fertig senden
+    otaInstallieren();
+  }
   delay(5);
 }
