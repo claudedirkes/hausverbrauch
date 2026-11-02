@@ -1,15 +1,15 @@
 // Hausverbrauch-Bridge: ESP32-CAM liest alle 15 Min. den HomeWizard P1 (lokale API)
 // und schickt Strom, Gas und Wasser an das Google Apps Script "Hausverbrauch".
-// Board in der Arduino IDE: "AI Thinker ESP32-CAM". Bibliothek: ArduinoJson (v7).
+// WLAN wird beim ersten Start über das Setup-WLAN "Hausverbrauch-Setup" eingegeben (WiFiManager).
+// Bibliotheken: ArduinoJson (v7), WiFiManager (tzapu).
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <WiFiManager.h>
 
 // ---------- Einstellungen anpassen ----------
-const char* WLAN_SSID  = "DEIN_WLAN";
-const char* WLAN_PASS  = "DEIN_PASSWORT";
 const char* HW_URL     = "http://192.168.178.79/api/v1/data";
 const char* SCRIPT_URL = "https://script.google.com/macros/s/DEINE_ID/exec";
 const char* WRITE_KEY  = "GLEICHER_KEY_WIE_IM_APPS_SCRIPT";
@@ -24,7 +24,7 @@ void wlanVerbinden() {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.print("WLAN verbinden");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WLAN_SSID, WLAN_PASS);
+  WiFi.begin();  // gespeicherte Zugangsdaten
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) {
     delay(500);
     Serial.print(".");
@@ -111,7 +111,15 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\nHausverbrauch-Bridge startet");
-  wlanVerbinden();
+  // Ohne gespeichertes/erreichbares WLAN: Setup-WLAN "Hausverbrauch-Setup" für 5 Min. öffnen
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(300);
+  if (!wm.autoConnect("Hausverbrauch-Setup")) {
+    Serial.println("Kein WLAN eingerichtet, Neustart");
+    delay(1000);
+    ESP.restart();
+  }
+  Serial.println("WLAN OK " + WiFi.localIP().toString());
 }
 
 void loop() {
