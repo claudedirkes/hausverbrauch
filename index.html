@@ -160,7 +160,7 @@ function chart(id, typ, labels, werte, farbe, tipp, extra = {}) {
   box.classList.toggle('ohneDaten', !hatWerte);
   if (!hatWerte) return;
   const wenige = werte.filter(v => !leer(v)).length < 20;
-  const datasets = [{ data: werte, backgroundColor: farbe, borderColor: farbe, borderRadius: 3,
+  const datasets = [{ data: werte, backgroundColor: farbe, borderColor: farbe, borderRadius: 3, maxBarThickness: 40,
                       pointRadius: wenige ? 3 : 0, pointHoverRadius: 5, tension: .3, fill: false, yAxisID: 'y' }]
                    .concat(extra.datasets || []);
   charts[id] = new Chart($(id), {
