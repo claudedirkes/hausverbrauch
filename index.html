@@ -55,6 +55,15 @@
   .nurStrom, .nurGas { display:none; }
   body.strom .nurStrom, body.gas .nurGas { display:block; }
   body.strom span.nurStrom { display:inline; }
+  .eigen { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; margin-top:10px; }
+  .eigen label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
+  .eigen input[type=date] { font-size:16px; padding:6px 8px; border:1px solid var(--grid); border-radius:8px; background:var(--bg); color:var(--text); }
+  .auswahl { display:grid; grid-template-columns:1fr; gap:8px; margin-top:10px; }
+  @media (min-width:640px) { .auswahl { grid-template-columns:repeat(5, auto); justify-content:start; column-gap:28px; } }
+  .auswahl fieldset { border:0; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:4px 12px; align-items:center; }
+  .auswahl legend { font-size:13px; font-weight:600; color:var(--muted); padding:0; margin-bottom:2px; width:100%; }
+  .auswahl label { font-size:14px; display:flex; align-items:center; gap:4px; cursor:pointer; }
+  .chart.hoch { height:340px; }
 </style>
 </head>
 <body class="strom">
@@ -132,6 +141,19 @@
   </div>
 
   <div class="card" style="margin-top:12px">
+    <div class="titel">Eigenes Diagramm</div>
+    <div class="muted">Zeitraum und Werte wählen. Bis 3 Tage: Viertelstunden, länger: Tageswerte (Verbrauch je Tag, sonst Tagesmittel Ø).</div>
+    <div class="eigen">
+      <label>Von<input id="eVon" type="date"></label>
+      <label>Bis<input id="eBis" type="date"></label>
+      <button id="eZeigen" type="button" class="haupt" style="background:var(--m);color:var(--mText);border-color:var(--m);font-weight:600">Anzeigen</button>
+      <span class="muted" id="eStatus"></span>
+    </div>
+    <div class="auswahl" id="eAuswahl"></div>
+    <div class="chart hoch" id="eBox" style="display:none"><canvas id="cEigen"></canvas><div class="leer">Keine Werte in diesem Zeitraum.</div></div>
+  </div>
+
+  <div class="card">
     <div class="titel" id="tPreise">Preise</div>
     <div class="muted">Ein neuer Wert gilt ab heute. Vergangene Tage werden mit dem damals gültigen Preis gerechnet.</div>
     <div class="preise">
@@ -683,6 +705,136 @@ async function preiseSpeichern() {
   }
 }
 
+// ---------- Eigenes Diagramm ----------
+// f = Feld in den Messungen bzw. Tageswerten; verbrauch = Zählerstand (Differenz), sonst Momentanwert
+const EIGEN = [
+  { gruppe:'Verbrauch',   id:'strom',    name:'Strom',          einheit:'kWh', farbe:'#e6a700', f:'import', verbrauch:true, dez:3 },
+  { gruppe:'Verbrauch',   id:'gas',      name:'Gas',            einheit:'m³',  farbe:'#d9534f', f:'gas',    verbrauch:true, dez:3 },
+  { gruppe:'Verbrauch',   id:'wasser',   name:'Wasser',         einheit:'L',   farbe:'#1f6fd1', f:'wasser', verbrauch:true, dez:0, faktor:1000 },
+  { gruppe:'Leistung',    id:'leistung', name:'Leistung gesamt',einheit:'W',   farbe:'#9aa5b1', dez:0 },
+  { gruppe:'Leistung',    id:'l1',       name:'L1',             einheit:'W',   farbe:'#e67e22', dez:0 },
+  { gruppe:'Leistung',    id:'l2',       name:'L2',             einheit:'W',   farbe:'#16a085', dez:0 },
+  { gruppe:'Leistung',    id:'l3',       name:'L3',             einheit:'W',   farbe:'#8e44ad', dez:0 },
+  { gruppe:'Spannung',    id:'u1',       name:'L1',             einheit:'V',   farbe:'#e67e22', dez:1, strich:[2, 2] },
+  { gruppe:'Spannung',    id:'u2',       name:'L2',             einheit:'V',   farbe:'#16a085', dez:1, strich:[2, 2] },
+  { gruppe:'Spannung',    id:'u3',       name:'L3',             einheit:'V',   farbe:'#8e44ad', dez:1, strich:[2, 2] },
+  { gruppe:'Stromstärke', id:'i1',       name:'L1',             einheit:'A',   farbe:'#e67e22', dez:2, strich:[6, 3] },
+  { gruppe:'Stromstärke', id:'i2',       name:'L2',             einheit:'A',   farbe:'#16a085', dez:2, strich:[6, 3] },
+  { gruppe:'Stromstärke', id:'i3',       name:'L3',             einheit:'A',   farbe:'#8e44ad', dez:2, strich:[6, 3] },
+  { gruppe:'Temperatur',  id:'temp',     name:'Außentemp.',     einheit:'°C',  farbe:'#2fa86b', dez:1 }
+];
+const datumDe = d => new Date(d + 'T12:00').toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit', year:'2-digit' });
+
+function eigenAuswahlBauen() {
+  let gewaehlt = ['strom'];
+  try { gewaehlt = JSON.parse(localStorage.getItem('hvEigen') || '["strom"]'); } catch (e) {}
+  const gruppen = [...new Set(EIGEN.map(w => w.gruppe))];
+  $('eAuswahl').innerHTML = gruppen.map(g => '<fieldset><legend>' + g + '</legend>' +
+    EIGEN.filter(w => w.gruppe === g).map(w => '<label><input type="checkbox" value="' + w.id + '"' +
+      (gewaehlt.includes(w.id) ? ' checked' : '') + '>' + w.name + '</label>').join('') + '</fieldset>').join('');
+  const heute = new Date();
+  $('eBis').value = iso(heute);
+  $('eVon').value = iso(new Date(heute.getTime() - 864e5));
+}
+
+async function eigenZeigen() {
+  const von = $('eVon').value, bis = $('eBis').value;
+  const ids = [...document.querySelectorAll('#eAuswahl input:checked')].map(x => x.value);
+  if (!von || !bis || von > bis) { $('eStatus').textContent = 'Zeitraum prüfen.'; return; }
+  if (!ids.length) { $('eStatus').textContent = 'Mindestens einen Wert wählen.'; return; }
+  try { localStorage.setItem('hvEigen', JSON.stringify(ids)); } catch (e) {}
+  const tage = Math.round((new Date(bis + 'T12:00') - new Date(von + 'T12:00')) / 864e5) + 1;
+  const aufl = tage <= 3 ? 'viertel' : 'tag';
+  $('eStatus').textContent = 'lädt …';
+  $('eZeigen').disabled = true;
+  try {
+    const r = await fetch(API + '?von=' + von + '&bis=' + bis + '&aufl=' + aufl, { cache:'no-store' });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.fehler || 'Antwort ungültig');
+    eigenZeichnen(d, ids, tage);
+    $('eStatus').textContent = aufl === 'viertel' ? 'Viertelstunden' : 'Tageswerte';
+  } catch (e) {
+    $('eStatus').textContent = 'Fehler: ' + e.message;
+  }
+  $('eZeigen').disabled = false;
+}
+
+function eigenZeichnen(d, ids, tage) {
+  const werte = EIGEN.filter(w => ids.includes(w.id));
+  let labels = [], titel = [], reihen = {};
+  if (d.aufl === 'viertel') {
+    // Momentanwert zum Messzeitpunkt, Verbrauch = Viertelstunde ab diesem Zeitpunkt
+    const ms = d.messungen.filter(x => x.zeit);
+    const mitDatum = tage > 1;
+    const zeigen = ms.filter(x => iso(new Date(x.zeit)) >= $('eVon').value && iso(new Date(x.zeit)) <= $('eBis').value);
+    zeigen.forEach(x => {
+      const t = new Date(x.zeit);
+      labels.push(mitDatum ? t.toLocaleDateString('de-DE', { day:'2-digit', month:'2-digit' }) + ' ' + hhmm(t) : hhmm(t));
+      titel.push(t.toLocaleDateString('de-DE') + ' ' + hhmm(t));
+    });
+    werte.forEach(w => {
+      reihen[w.id] = zeigen.map(x => {
+        if (!w.verbrauch) return leer(x[w.id]) ? null : Number(x[w.id]);
+        const j = ms.indexOf(x), n = ms[j + 1];
+        if (!n || leer(x[w.f]) || leer(n[w.f])) return null;
+        const min = (new Date(n.zeit) - new Date(x.zeit)) / 6e4;
+        if (min < 14 || min > 16) return null;
+        return +((Number(n[w.f]) - Number(x[w.f])) * (w.faktor || 1)).toFixed(w.dez);
+      });
+    });
+  } else {
+    labels = d.tage.map(x => datumDe(x.datum));
+    titel = d.tage.map(x => new Date(x.datum + 'T12:00').toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit', year:'numeric' }));
+    werte.forEach(w => {
+      reihen[w.id] = d.tage.map(x => {
+        const v = x[w.id];
+        return leer(v) ? null : +(Number(v) * (w.faktor || 1)).toFixed(w.dez);
+      });
+    });
+  }
+
+  if (charts.cEigen) { charts.cEigen.destroy(); delete charts.cEigen; }
+  $('eBox').style.display = 'block';
+  const hatWerte = werte.some(w => reihen[w.id].some(v => v !== null));
+  $('eBox').classList.toggle('ohneDaten', !hatWerte);
+  if (!hatWerte) return;
+
+  // eine Y-Achse je Einheit: erste links, weitere rechts
+  const einheiten = [...new Set(werte.map(w => w.einheit))];
+  const scales = { x: { grid: { display:false }, ticks: { maxRotation:0, autoSkip:true, maxTicksLimit:8 } } };
+  einheiten.forEach((e, i) => {
+    const nurVerbrauch = werte.filter(w => w.einheit === e).every(w => w.verbrauch);
+    scales['y_' + i] = { position: i ? 'right' : 'left', beginAtZero: nurVerbrauch || e === 'W' || e === 'A',
+      grid: { display: i === 0 }, ticks: { maxTicksLimit:6 }, title: { display:true, text:e } };
+  });
+  const wenige = labels.length < 40;
+  const datasets = werte.map(w => {
+    const tag = d.aufl === 'tag' && !w.verbrauch;
+    const name = (['L1', 'L2', 'L3'].includes(w.name) ? w.gruppe + ' ' + w.name : w.name) + (tag ? ' Ø' : '');
+    return w.verbrauch
+      ? { type:'bar', label:name, data:reihen[w.id], backgroundColor:w.farbe, borderRadius:3, maxBarThickness:30,
+          yAxisID:'y_' + einheiten.indexOf(w.einheit), order:2, w }
+      : { type:'line', label:name, data:reihen[w.id], borderColor:w.farbe, backgroundColor:w.farbe, borderWidth:1.8,
+          borderDash:w.strich || [], pointRadius: wenige ? 2.5 : 0, pointHoverRadius:4, tension:.25, spanGaps:true,
+          yAxisID:'y_' + einheiten.indexOf(w.einheit), order:1, w };
+  });
+  charts.cEigen = new Chart($('cEigen'), {
+    data: { labels, datasets },
+    options: {
+      maintainAspectRatio:false,
+      interaction: { mode:'index', intersect:false },
+      events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
+      plugins: {
+        legend: { display:true, position:'bottom', labels: { boxWidth:12, boxHeight:12, usePointStyle:true } },
+        tooltip: { padding:10, bodyFont: { size:13 },
+                   callbacks: { title: c => c.length ? titel[c[0].dataIndex] : '',
+                                label: c => c.dataset.label + ': ' + fmtE(c.raw, c.dataset.w.dez, c.dataset.w.einheit) } }
+      },
+      scales
+    }
+  });
+}
+
 async function laden() {
   if (!API) { $('zeit').textContent = 'API-URL fehlt in index.html.'; return; }
   $('zeit').textContent = 'lädt …';
@@ -701,6 +853,8 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { mediu
 $('reload').onclick = laden;
 $('pSpeichern').onclick = preiseSpeichern;
 $('lImport').onclick = lenedaImport;
+$('eZeigen').onclick = eigenZeigen;
+eigenAuswahlBauen();
 laden();
 setInterval(laden, 5 * 60 * 1000);
 </script>

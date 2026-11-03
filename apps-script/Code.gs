@@ -228,8 +228,106 @@ function doPost(e) {
   return antwort({ ok: true });
 }
 
-function doGet() {
+// Eine Zeile aus "Aktuell" als JSON-Objekt für die WebApp
+function messungJson(r) {
+  return {
+    zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
+    import: r[1], leistung: r[2], l1: r[3], l2: r[4], l3: r[5], gas: r[6], wasser: r[7],
+    u1: r[8], u2: r[9], u3: r[10], i1: r[11], i2: r[12], i3: r[13],
+    gasZeit: r[14] instanceof Date ? r[14].toISOString() : r[14],
+    wasserZeit: r[15] instanceof Date ? r[15].toISOString() : r[15],
+    sag1: r[16], sag2: r[17], sag3: r[18], swell1: r[19], swell2: r[20], swell3: r[21], ausfaelle: r[22],
+    temp: r[23]
+  };
+}
+
+// Eigenes Diagramm: Werte von p.von bis p.bis (yyyy-MM-dd).
+// p.aufl = 'viertel': alle Messungen (plus eine danach für den letzten Viertelstunden-Verbrauch).
+// p.aufl = 'tag': je Tag Verbrauch (Tage-Blatt, sonst Historie) und Tagesmittel der Momentanwerte.
+const MITTEL = { leistung: 2, l1: 3, l2: 4, l3: 5, u1: 8, u2: 9, u3: 10, i1: 11, i2: 12, i3: 13, temp: 23 };
+function bereich(p) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.von) || !/^\d{4}-\d{2}-\d{2}$/.test(p.bis) || p.von > p.bis)
+    return antwort({ ok: false, fehler: 'Datum ungültig' });
+  const ss = SpreadsheetApp.getActive();
+  const akt = ss.getSheetByName('Aktuell');
+  const tagBeginn = d => Utilities.parseDate(d, TZ, 'yyyy-MM-dd').getTime();
+  const naechsterTag = d => Utilities.formatDate(new Date(tagBeginn(d) + 36 * 3600e3), TZ, 'yyyy-MM-dd');
+  const start = tagBeginn(p.von), ende = tagBeginn(naechsterTag(p.bis));
+  const n = Math.max(0, akt.getLastRow() - 1);
+  const zeiten = n ? akt.getRange(2, 1, n, 1).getValues().map(r => r[0] instanceof Date ? r[0].getTime() : NaN) : [];
+
+  if (p.aufl === 'viertel') {
+    let lo = -1, hi = -1;
+    zeiten.forEach((t, i) => { if (t >= start && t < ende) { if (lo < 0) lo = i; hi = i; } });
+    if (lo < 0) return antwort({ ok: true, aufl: 'viertel', messungen: [] });
+    hi = Math.min(hi + 1, n - 1);   // eine Messung danach für den letzten Verbrauch
+    const zeilen = akt.getRange(lo + 2, 1, hi - lo + 1, KOPF_AKTUELL.length).getValues();
+    return antwort({ ok: true, aufl: 'viertel', messungen: zeilen.map(messungJson) });
+  }
+
+  // Tagesmittel: Messung um 00:00 gehört zum Vortag (wie im Blatt "Tage")
+  const tage = {};
+  const tag = d => tage[d] || (tage[d] = { datum: d, summe: {}, anzahl: {} });
+  let lo = -1, hi = -1;
+  zeiten.forEach((t, i) => { if (t > start && t <= ende) { if (lo < 0) lo = i; hi = i; } });
+  if (lo >= 0) {
+    const zeilen = akt.getRange(lo + 2, 1, hi - lo + 1, KOPF_AKTUELL.length).getValues();
+    let key = '', kVon = 0, kBis = 0;
+    zeilen.forEach(r => {
+      if (!(r[0] instanceof Date)) return;
+      const t = r[0].getTime() - 1000;
+      if (!(t >= kVon && t < kBis)) {
+        key = Utilities.formatDate(new Date(t), TZ, 'yyyy-MM-dd');
+        kVon = tagBeginn(key); kBis = tagBeginn(naechsterTag(key));
+      }
+      const o = tag(key);
+      Object.keys(MITTEL).forEach(f => {
+        const v = r[MITTEL[f]];
+        if (v === '' || v === null || isNaN(Number(v))) return;
+        o.summe[f] = (o.summe[f] || 0) + Number(v);
+        o.anzahl[f] = (o.anzahl[f] || 0) + 1;
+      });
+    });
+  }
+
+  // Verbrauch je Tag: Endstand minus Endstand des Vortags, fehlende Tage aus der Historie
+  const zahl = v => { const x = parseFloat(String(v).replace(',', '.')); return isNaN(x) ? null : x; };
+  const tb = ss.getSheetByName('Tage');
+  const nT = Math.max(0, tb.getLastRow() - 1);
+  const tw = nT ? tb.getRange(2, 1, nT, 4).getDisplayValues() : [];
+  const verbrauch = {};
+  for (let i = 1; i < tw.length; i++) {
+    const d = tw[i][0];
+    if (d < p.von || d > p.bis) continue;
+    const v = verbrauch[d] = {};
+    [['strom', 1], ['gas', 2], ['wasser', 3]].forEach(([f, c]) => {
+      const a = zahl(tw[i - 1][c]), b = zahl(tw[i][c]);
+      if (a !== null && b !== null) v[f] = b - a;
+    });
+  }
+  const hi2 = ss.getSheetByName('Historie');
+  const nH = hi2 ? Math.max(0, hi2.getLastRow() - 1) : 0;
+  if (nH) hi2.getRange(2, 1, nH, KOPF_HIST.length).getValues().forEach(r => {
+    const d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
+    if (d < p.von || d > p.bis) return;
+    const v = verbrauch[d] || (verbrauch[d] = {});
+    [['strom', 1], ['gas', 3], ['wasser', 5]].forEach(([f, c]) => {
+      if (v[f] === undefined && zahl(r[c]) !== null) v[f] = zahl(r[c]);
+    });
+  });
+  Object.keys(verbrauch).forEach(d => tag(d));
+
+  const liste = Object.keys(tage).filter(d => d >= p.von && d <= p.bis).sort().map(d => {
+    const o = tage[d], out = Object.assign({ datum: d }, verbrauch[d] || {});
+    Object.keys(o.summe).forEach(f => out[f] = o.summe[f] / o.anzahl[f]);
+    return out;
+  });
+  return antwort({ ok: true, aufl: 'tag', tage: liste });
+}
+
+function doGet(e) {
   einspeisungEntfernen();
+  if (e && e.parameter && e.parameter.von) return bereich(e.parameter);
   const ss = SpreadsheetApp.getActive();
   const akt = ss.getSheetByName('Aktuell');
   const tage = ss.getSheetByName('Tage');
@@ -263,15 +361,7 @@ function doGet() {
     ok: true,
     preise: preise,
     historie: historie,
-    messungen: messungen.map(r => ({
-      zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
-      import: r[1], leistung: r[2], l1: r[3], l2: r[4], l3: r[5], gas: r[6], wasser: r[7],
-      u1: r[8], u2: r[9], u3: r[10], i1: r[11], i2: r[12], i3: r[13],
-      gasZeit: r[14] instanceof Date ? r[14].toISOString() : r[14],
-      wasserZeit: r[15] instanceof Date ? r[15].toISOString() : r[15],
-      sag1: r[16], sag2: r[17], sag3: r[18], swell1: r[19], swell2: r[20], swell3: r[21], ausfaelle: r[22],
-      temp: r[23]
-    })),
+    messungen: messungen.map(messungJson),
     tage: tageWerte.map(r => ({
       datum: r[0],
       import: parseFloat(String(r[1]).replace(',', '.')),
