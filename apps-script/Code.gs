@@ -3,7 +3,7 @@
 
 const WRITE_KEY = 'HIER_EIGENEN_KEY_EINTRAGEN';   // gleicher Wert wie WRITE_KEY in der Firmware
 const TZ = 'Europe/Luxembourg';
-const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Leistung (W)',
+const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Leistung (W)',
                       'L1 (W)', 'L2 (W)', 'L3 (W)', 'Gas (m³)', 'Wasser (m³)',
                       'L1 (V)', 'L2 (V)', 'L3 (V)', 'L1 (A)', 'L2 (A)', 'L3 (A)',
                       'Gas abgelesen', 'Wasser abgelesen',
@@ -11,7 +11,7 @@ const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Strom Einspeisung (
                       'Überspannung L1', 'Überspannung L2', 'Überspannung L3', 'Stromausfälle',
                       'Außentemp. Diekirch (°C)'];
 const LAT = 49.868, LON = 6.159;   // Diekirch
-const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)',
+const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Gas (m³)', 'Wasser (m³)',
                    'Strom über Referenz (kWh)'];
 // Preise: eine Zeile pro Preisänderung. Ein neuer Preis gilt ab seinem Datum, ältere Tage behalten den alten Preis.
 const KOPF_PREISE = ['Medium', 'Preis (€)', 'Einheit', 'gültig ab'];
@@ -19,8 +19,19 @@ const KOPF_PREISE = ['Medium', 'Preis (€)', 'Einheit', 'gültig ab'];
 const START_PREISE = [['strom', 0.1793, '€/kWh'], ['gas', 0.431, '€/m³'], ['wasser', 10.45, '€/m³'], ['referenz', 3, 'kW']];
 const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³', referenz: 'kW', geteilt: '€/kWh' };
 
+// Einspeisung wird nicht mehr erfasst: alte Spalte C ("Strom Einspeisung") in "Aktuell" und "Tage" löschen.
+// Läuft automatisch beim ersten Aufruf nach dem Update (nur solange die Spalte noch existiert).
+function einspeisungEntfernen() {
+  const ss = SpreadsheetApp.getActive();
+  ['Aktuell', 'Tage'].forEach(name => {
+    const sh = ss.getSheetByName(name);
+    if (sh && String(sh.getRange(1, 3).getValue()).indexOf('Einspeisung') >= 0) sh.deleteColumn(3);
+  });
+}
+
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
+  einspeisungEntfernen();
   const ss = SpreadsheetApp.getActive();
   [['Aktuell', KOPF_AKTUELL], ['Tage', KOPF_TAGE]].forEach(([name, kopf]) => {
     const sh = ss.getSheetByName(name) || ss.insertSheet(name);
@@ -117,7 +128,8 @@ function ueberReferenz(tA, kwhA, tB, kwhB, refKw) {
 function referenzNachrechnen() {
   const ss = SpreadsheetApp.getActive();
   const akt = ss.getSheetByName('Aktuell'), tage = ss.getSheetByName('Tage');
-  tage.getRange(1, 6).setValue(KOPF_TAGE[5]).setFontWeight('bold');
+  einspeisungEntfernen();
+  tage.getRange(1, 5).setValue(KOPF_TAGE[4]).setFontWeight('bold');
   const n = akt.getLastRow() - 1;
   if (n < 2) return;
   const w = akt.getRange(2, 1, n, 2).getValues();
@@ -131,7 +143,7 @@ function referenzNachrechnen() {
   const nT = tage.getLastRow() - 1;
   if (nT < 1) return;
   const daten = tage.getRange(2, 1, nT, 1).getDisplayValues();
-  tage.getRange(2, 6, nT, 1).setValues(daten.map(r => [proTag[r[0]] !== undefined ? +proTag[r[0]].toFixed(3) : '']));
+  tage.getRange(2, 5, nT, 1).setValues(daten.map(r => [proTag[r[0]] !== undefined ? +proTag[r[0]].toFixed(3) : '']));
   console.log('Fertig: ' + Object.keys(proTag).length + ' Tage berechnet');
 }
 
@@ -160,6 +172,7 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
+    einspeisungEntfernen();
     const ss = SpreadsheetApp.getActive();
     // Messzeitpunkt = Rasterpunkt der Bridge (:00/:15/:30/:45, wie Leneda). Ältere Firmware: Empfangszeit.
     const jetzt = d.slot ? new Date(Number(d.slot) * 1000) : new Date();
@@ -184,7 +197,7 @@ function doPost(e) {
     }
 
     akt.appendRow([
-      jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
+      jetzt, zahl(d.strom_import_kwh), zahl(d.leistung_w),
       zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3),
       zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a),
       zeitstempel(d.gas_ts), zeitstempel(d.wasser_ts),
@@ -195,12 +208,12 @@ function doPost(e) {
     // Tagesblatt: eine Zeile pro Tag mit dem Endstand. Der Stand um 00:00 ist der Endstand des Vortags
     // (Tagesverbrauch = 00:00 bis 00:00, wie Leneda), deshalb 1 Sekunde zurückrechnen.
     const tage = ss.getSheetByName('Tage');
-    if (tage.getRange(1, 6).getValue() === '') tage.getRange(1, 6).setValue(KOPF_TAGE[5]).setFontWeight('bold');
-    const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
+    if (tage.getRange(1, 5).getValue() === '') tage.getRange(1, 5).setValue(KOPF_TAGE[4]).setFontWeight('bold');
+    const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
     const letzte = tage.getLastRow();
     const letztesDatum = letzte > 1 ? String(tage.getRange(letzte, 1).getDisplayValue()) : '';
     if (letztesDatum === datum) {
-      const bisher = Number(tage.getRange(letzte, 6).getValue()) || 0;
+      const bisher = Number(tage.getRange(letzte, 5).getValue()) || 0;
       zeile.push(+(bisher + ueber).toFixed(3));
       tage.getRange(letzte, 1, 1, zeile.length).setValues([zeile]);
     } else {
@@ -216,6 +229,7 @@ function doPost(e) {
 }
 
 function doGet() {
+  einspeisungEntfernen();
   const ss = SpreadsheetApp.getActive();
   const akt = ss.getSheetByName('Aktuell');
   const tage = ss.getSheetByName('Tage');
@@ -228,7 +242,7 @@ function doGet() {
   // bis zu 400 Tage
   const nT = Math.max(0, tage.getLastRow() - 1);
   const anzT = Math.min(nT, 400);
-  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 6).getDisplayValues() : [];
+  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 5).getDisplayValues() : [];
 
   const pr = preiseBlatt();
   const nP = Math.max(0, pr.getLastRow() - 1);
@@ -251,20 +265,19 @@ function doGet() {
     historie: historie,
     messungen: messungen.map(r => ({
       zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
-      import: r[1], export: r[2], leistung: r[3], l1: r[4], l2: r[5], l3: r[6], gas: r[7], wasser: r[8],
-      u1: r[9], u2: r[10], u3: r[11], i1: r[12], i2: r[13], i3: r[14],
-      gasZeit: r[15] instanceof Date ? r[15].toISOString() : r[15],
-      wasserZeit: r[16] instanceof Date ? r[16].toISOString() : r[16],
-      sag1: r[17], sag2: r[18], sag3: r[19], swell1: r[20], swell2: r[21], swell3: r[22], ausfaelle: r[23],
-      temp: r[24]
+      import: r[1], leistung: r[2], l1: r[3], l2: r[4], l3: r[5], gas: r[6], wasser: r[7],
+      u1: r[8], u2: r[9], u3: r[10], i1: r[11], i2: r[12], i3: r[13],
+      gasZeit: r[14] instanceof Date ? r[14].toISOString() : r[14],
+      wasserZeit: r[15] instanceof Date ? r[15].toISOString() : r[15],
+      sag1: r[16], sag2: r[17], sag3: r[18], swell1: r[19], swell2: r[20], swell3: r[21], ausfaelle: r[22],
+      temp: r[23]
     })),
     tage: tageWerte.map(r => ({
       datum: r[0],
       import: parseFloat(String(r[1]).replace(',', '.')),
-      export: parseFloat(String(r[2]).replace(',', '.')),
-      gas: parseFloat(String(r[3]).replace(',', '.')),
-      wasser: parseFloat(String(r[4]).replace(',', '.')),
-      ueber: parseFloat(String(r[5]).replace(',', '.'))
+      gas: parseFloat(String(r[2]).replace(',', '.')),
+      wasser: parseFloat(String(r[3]).replace(',', '.')),
+      ueber: parseFloat(String(r[4]).replace(',', '.'))
     }))
   });
 }

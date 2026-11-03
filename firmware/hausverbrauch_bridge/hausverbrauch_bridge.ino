@@ -29,7 +29,7 @@ const long NACHHOLEN_S = 5L * 60L; // fehlgeschlagene Abfrage bis 5 Min. nach de
 const char* ZEITZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Luxemburg inkl. Sommerzeit
 // --------------------------------------------
 
-const int FW_VERSION = 6;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 7;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -63,9 +63,9 @@ async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await
 $('fw').textContent='v'+d.fw;
 $('dg').textContent='WLAN '+d.rssi+' dBm · l\u00e4uft seit '+d.laufzeit+' min · letzter Versand '+(d.versand<0?'noch keiner':'vor '+d.versand+' min')+' (Script '+d.script+')';
 if(!d.ok){$('s').textContent='HomeWizard-Fehler '+d.hw+(d.hwFehler?' ('+d.hwFehler+')':'');}else{
-$('p').innerHTML=f(d.p,0)+' W';$('p').style.color=d.p<0?'var(--g)':'var(--a)';
+$('p').innerHTML=f(d.p,0)+' W';$('p').style.color='var(--a)';
 for(const i of[1,2,3]){$('w'+i).innerHTML=f(d['w'+i],0)+' W';$('v'+i).innerHTML=f(d['v'+i],1)+' V';$('a'+i).innerHTML=f(d['a'+i],2)+' A';}
-$('s').textContent=(d.p<0?'Einspeisung · ':'Bezug · ')+new Date().toLocaleTimeString('de-DE');}}catch(e){$('s').textContent='ESP32-CAM nicht erreichbar';}
+$('s').textContent='Stand '+new Date().toLocaleTimeString('de-DE');}}catch(e){$('s').textContent='ESP32-CAM nicht erreichbar';}
 setTimeout(hol,1000);}hol();
 $('upd').onclick=async()=>{$('upd').disabled=true;$('us').textContent='pr\u00fcfe \u2026';try{const r=await fetch('/update',{method:'POST'}),d=await r.json();$('us').textContent=d.update?('Update auf v'+d.verfuegbar+' wird installiert. Neustart in ca. 1 Minute, dann Seite neu laden.'):(d.verfuegbar>0?'Aktuell (v'+d.installiert+'), kein Update verf\u00fcgbar.':'GitHub nicht erreichbar.');}catch(e){$('us').textContent='Fehler: '+e;}$('upd').disabled=false;};</script></body></html>)HTML";
 
@@ -176,7 +176,6 @@ String homewizardLesen(long slot) {
   out["fw"]               = FW_VERSION;
   out["slot"]             = slot;   // Rasterpunkt (Unix-Zeit, UTC), auf den sich die Zählerstände beziehen
   out["strom_import_kwh"] = hw["total_power_import_kwh"];
-  out["strom_export_kwh"] = hw["total_power_export_kwh"];
   out["leistung_w"]       = hw["active_power_w"];
   out["l1_w"]             = hw["active_power_l1_w"];
   out["l2_w"]             = hw["active_power_l2_w"];

@@ -104,7 +104,7 @@
   <div class="charts">
     <div class="card breit">
       <div class="titel" id="tViertel">Verbrauch pro Viertelstunde – letzte 24 h</div>
-      <div class="muted nurStrom">Leistung zuletzt: <b id="leistung">–</b> = <b id="leistungE">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
+      <div class="muted nurStrom">Leistung zuletzt: <b id="leistung">–</b> = <b id="leistungE">–</b></div>
       <div class="chart"><canvas id="cViertel"></canvas><div class="leer">Noch keine Viertelstundenwerte – das Diagramm füllt sich ab der nächsten Messung.</div></div>
     </div>
 
@@ -524,10 +524,7 @@ function anzeigen() {
       $('gtGesamt').textContent = gtSumme('');
     }
     $('leistung').textContent = fmtE(leer(letzte.leistung) ? NaN : Number(letzte.leistung), 0, 'W') + ' (' + hhmm(zeit) + ')';
-    // nur Bezug kostet Geld; bei Einspeisung (negative Leistung) 0 €
     $('leistungE').textContent = leer(letzte.leistung) ? '–' : eur(Math.max(0, Number(letzte.leistung)) / 1000 * preis('strom', iso(zeit))) + '/h';
-    const ev = tagesVerbrauch('export');
-    $('einspeisung').textContent = fmtE(leer(ev[iso(heute)]) ? NaN : ev[iso(heute)], 2, 'kWh');
   }
 }
 
