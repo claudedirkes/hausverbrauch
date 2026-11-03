@@ -52,8 +52,8 @@ function preiseBlatt() {
 
 // Historie (Leneda-Import): eine Zeile pro Tag. Eigene P1-Messungen im Blatt "Tage" haben in der WebApp Vorrang.
 // "Strom geteilt" = Leneda OBIS 1-65:1.29.x (Verbrauch gedeckt durch Energieteilung); Rest vom Lieferanten = Bezug − geteilt
-const KOPF_HIST = ['Datum', 'Strom Bezug (kWh)', 'Strom über Referenz (kWh)', 'Gas (m³)', 'Strom geteilt (kWh)'];
-const HIST_SPALTE = { strom: 1, gas: 3, geteilt: 4 };   // Index in KOPF_HIST
+const KOPF_HIST = ['Datum', 'Strom Bezug (kWh)', 'Strom über Referenz (kWh)', 'Gas (m³)', 'Strom geteilt (kWh)', 'Wasser (m³)'];
+const HIST_SPALTE = { strom: 1, gas: 3, geteilt: 4, wasser: 5 };   // Index in KOPF_HIST
 
 function historieBlatt() {
   const ss = SpreadsheetApp.getActive();
@@ -242,7 +242,7 @@ function doGet() {
   const zahlOderNull = v => (v === '' || v === null) ? null : Number(v);
   const historie = nH ? hi.getRange(2, 1, nH, KOPF_HIST.length).getValues().map(r => ({
     datum: r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]),
-    strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3]), geteilt: zahlOderNull(r[4])
+    strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3]), geteilt: zahlOderNull(r[4]), wasser: zahlOderNull(r[5])
   })) : [];
 
   return antwort({

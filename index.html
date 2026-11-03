@@ -217,7 +217,7 @@ const kostenTage = (eintraege, med) => eintraege.reduce((s, [d, v]) => s + koste
 
 // Tagesverbrauch = Endstand Tag minus Endstand Vortag
 // Tage ohne eigene Messung werden aus der Historie (Leneda-Import) ergänzt
-const HIST_FELD = { import: 'strom', gas: 'gas' };
+const HIST_FELD = { import: 'strom', gas: 'gas', wasser: 'wasser' };
 function tagesVerbrauch(feld) {
   const t = daten.tage, out = {};
   for (let i = 1; i < t.length; i++) {
