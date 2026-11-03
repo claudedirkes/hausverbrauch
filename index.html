@@ -198,6 +198,26 @@ Chart.register({
   }
 });
 
+// Beschriftung einer Linie: Datensatz mit "beschriftung" bekommt seinen Text rechts über den Strich
+Chart.register({
+  id: 'linienText',
+  afterDatasetsDraw(chart) {
+    const { ctx, chartArea } = chart;
+    chart.data.datasets.forEach((ds, i) => {
+      if (!ds.beschriftung) return;
+      const pts = chart.getDatasetMeta(i).data.filter((p, k) => ds.data[k] !== null && !isNaN(p.y));
+      if (!pts.length) return;
+      ctx.save();
+      ctx.font = '600 12px ' + Chart.defaults.font.family;
+      ctx.fillStyle = ds.borderColor;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(ds.beschriftung, chartArea.right - 4, pts[pts.length - 1].y - 4);
+      ctx.restore();
+    });
+  }
+});
+
 // Preis (€ je kWh bzw. m³), der am Tag tag (yyyy-mm-dd) galt
 function preis(med, tag) {
   const p = (daten.preise || []).filter(x => x.medium === med && x.ab <= tag).sort((a, b) => a.ab < b.ab ? -1 : 1);
@@ -367,7 +387,9 @@ function anzeigen() {
     },
     istStrom ? {
       datasets: [{ type:'line', data: refV, borderColor:'#c0392b', borderDash:[6, 4], borderWidth:1.5, pointRadius:0,
-                   pointHoverRadius:0, fill:false, stepped:true, yAxisID:'y' }],
+                   pointHoverRadius:0, fill:false, stepped:true, yAxisID:'y',
+                   beschriftung: (() => { const r = refV.filter(v => v !== null).pop();
+                     return 'Referenz ' + fmt(r * 4, 1) + ' kW = ' + fmtE(r, 2, 'kWh') + ' je ¼ h'; })() }],
       tipp2: v => 'Referenz: ' + fmt(v * 4, 1) + ' kW (' + fmtE(v, 2, 'kWh') + ')'
     } : {});
 
