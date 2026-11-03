@@ -12,6 +12,10 @@ const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Strom Einspeisung (
                       'Außentemp. Diekirch (°C)'];
 const LAT = 49.868, LON = 6.159;   // Diekirch
 const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)'];
+// Preise: eine Zeile pro Preisänderung. Ein neuer Preis gilt ab seinem Datum, ältere Tage behalten den alten Preis.
+const KOPF_PREISE = ['Medium', 'Preis (€)', 'Einheit', 'gültig ab'];
+const START_PREISE = [['strom', 0.1793, '€/kWh'], ['gas', 0.431, '€/m³'], ['wasser', 10.45, '€/m³']];
+const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³' };
 
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
@@ -21,11 +25,43 @@ function einrichten() {
     sh.getRange(1, 1, 1, kopf.length).setValues([kopf]).setFontWeight('bold');
     sh.setFrozenRows(1);
   });
+  preiseBlatt();
+}
+
+// Blatt "Preise" holen; fehlt es, wird es mit den Startpreisen angelegt
+function preiseBlatt() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('Preise');
+  if (!sh) {
+    sh = ss.insertSheet('Preise');
+    sh.getRange(1, 1, 1, KOPF_PREISE.length).setValues([KOPF_PREISE]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange(2, 4, START_PREISE.length, 1).setNumberFormat('@');
+    sh.getRange(2, 1, START_PREISE.length, 4).setValues(START_PREISE.map(r => r.concat('2000-01-01')));
+  }
+  return sh;
+}
+
+// Neuen Preis speichern (aus der WebApp). Gleiches Medium am selben Tag: Zeile überschreiben.
+function preisSpeichern(d) {
+  const medium = String(d.medium);
+  const preis = Number(String(d.preis).replace(',', '.'));
+  if (!EINHEIT[medium] || !(preis >= 0)) return antwort({ ok: false, fehler: 'ungültiger Preis' });
+  const sh = preiseBlatt();
+  const ab = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  const n = sh.getLastRow() - 1;
+  const werte = n > 0 ? sh.getRange(2, 1, n, 4).getDisplayValues() : [];
+  const i = werte.findIndex(r => r[0] === medium && r[3] === ab);
+  const zeile = i >= 0 ? i + 2 : sh.getLastRow() + 1;
+  sh.getRange(zeile, 4).setNumberFormat('@');
+  sh.getRange(zeile, 1, 1, 4).setValues([[medium, preis, EINHEIT[medium], ab]]);
+  return antwort({ ok: true });
 }
 
 function doPost(e) {
   const d = JSON.parse(e.postData.contents);
   if (d.key !== WRITE_KEY) return antwort({ ok: false, fehler: 'key' });
+  if (d.aktion === 'preis') return preisSpeichern(d);
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -87,8 +123,16 @@ function doGet() {
   const anzT = Math.min(nT, 400);
   const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 5).getDisplayValues() : [];
 
+  const pr = preiseBlatt();
+  const nP = Math.max(0, pr.getLastRow() - 1);
+  const preise = nP ? pr.getRange(2, 1, nP, 4).getValues()
+    .map(r => ({ medium: String(r[0]).trim().toLowerCase(), preis: parseFloat(String(r[1]).replace(',', '.')),
+                 ab: r[3] instanceof Date ? Utilities.formatDate(r[3], TZ, 'yyyy-MM-dd') : String(r[3]) }))
+    .filter(p => p.medium && !isNaN(p.preis)) : [];
+
   return antwort({
     ok: true,
+    preise: preise,
     messungen: messungen.map(r => ({
       zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
       import: r[1], export: r[2], leistung: r[3], l1: r[4], l2: r[5], l3: r[6], gas: r[7], wasser: r[8],

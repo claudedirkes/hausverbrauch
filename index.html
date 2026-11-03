@@ -32,9 +32,16 @@
   .titel { color:var(--muted); font-size:14px; font-weight:600; }
   .warn { color:var(--warn); font-weight:600; font-size:14px; margin-top:6px; }
   .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
-  @media (min-width:640px) { .grid { grid-template-columns:repeat(4,1fr); } }
+  @media (min-width:640px) { .grid { grid-template-columns:repeat(3,1fr); } }
   .kpi { margin-bottom:0; }
   .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .kpi .eur { font-size:15px; font-weight:600; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums; }
+  .preise { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
+  @media (min-width:640px) { .preise { grid-template-columns:repeat(3,1fr); } }
+  .preise label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
+  .preise input { font-size:16px; padding:8px 10px; border:1px solid var(--grid); border-radius:8px; background:var(--bg); color:var(--text); }
+  .preisZeile { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  .preisZeile button.haupt { background:var(--m); color:var(--mText); border-color:var(--m); font-weight:600; }
   .charts { display:grid; grid-template-columns:1fr; gap:12px; }
   .charts .card { margin-bottom:0; }
   @media (min-width:1000px) { .charts { grid-template-columns:1fr 1fr; } .breit { grid-column:1 / -1; } }
@@ -72,16 +79,18 @@
   </div>
 
   <div class="grid">
-    <div class="card kpi"><div class="muted">Heute</div><div class="wert" id="heute">–</div></div>
-    <div class="card kpi"><div class="muted">Gestern</div><div class="wert" id="gestern">–</div></div>
-    <div class="card kpi"><div class="muted">Dieser Monat</div><div class="wert" id="monat">–</div></div>
-    <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div></div>
+    <div class="card kpi"><div class="muted">Letzte Stunde</div><div class="wert" id="stunde">–</div><div class="eur" id="stundeE"></div></div>
+    <div class="card kpi"><div class="muted">Heute</div><div class="wert" id="heute">–</div><div class="eur" id="heuteE"></div></div>
+    <div class="card kpi"><div class="muted">Gestern</div><div class="wert" id="gestern">–</div><div class="eur" id="gesternE"></div></div>
+    <div class="card kpi"><div class="muted">Dieser Monat</div><div class="wert" id="monat">–</div><div class="eur" id="monatE"></div></div>
+    <div class="card kpi"><div class="muted">Dieses Jahr</div><div class="wert" id="jahr">–</div><div class="eur" id="jahrE"></div></div>
+    <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div><div class="eur" id="schnittE"></div></div>
   </div>
 
   <div class="charts">
     <div class="card breit">
       <div class="titel" id="tViertel">Verbrauch pro Viertelstunde – letzte 24 h</div>
-      <div class="muted nurStrom">Leistung zuletzt: <b id="leistung">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
+      <div class="muted nurStrom">Leistung zuletzt: <b id="leistung">–</b> = <b id="leistungE">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
       <div class="chart"><canvas id="cViertel"></canvas><div class="leer">Noch keine Viertelstundenwerte – das Diagramm füllt sich ab der nächsten Messung.</div></div>
     </div>
 
@@ -98,6 +107,20 @@
     <div class="card">
       <div class="titel" id="tMonate">Monatsverbrauch</div>
       <div class="chart"><canvas id="cMonate"></canvas><div class="leer">Noch keine Monatswerte.</div></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="titel">Preise</div>
+    <div class="muted">Ein neuer Preis gilt ab heute. Vergangene Tage werden mit dem damals gültigen Preis gerechnet.</div>
+    <div class="preise">
+      <label>⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
+      <label>🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
+      <label>💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
+    </div>
+    <div class="preisZeile">
+      <button id="pSpeichern" type="button" class="haupt">Preise speichern</button>
+      <span class="muted" id="pStatus"></span>
     </div>
   </div>
 </div>
@@ -140,6 +163,15 @@ Chart.register({
     }, 2000);
   }
 });
+
+// Preis (€ je kWh bzw. m³), der am Tag tag (yyyy-mm-dd) galt
+function preis(med, tag) {
+  const p = (daten.preise || []).filter(x => x.medium === med && x.ab <= tag).sort((a, b) => a.ab < b.ab ? -1 : 1);
+  return p.length ? p[p.length - 1].preis : NaN;
+}
+const eur = v => leer(v) ? '' : Number(v).toLocaleString('de-DE', { style:'currency', currency:'EUR' });
+// Kosten mehrerer Tage, jeder Tag mit seinem Preis
+const kostenTage = (eintraege, med) => eintraege.reduce((s, [d, v]) => s + v * preis(med, d), 0);
 
 // Tagesverbrauch = Endstand Tag minus Endstand Vortag
 function tagesVerbrauch(feld) {
@@ -220,13 +252,28 @@ function anzeigen() {
 
   const tv = tagesVerbrauch(m.feld);
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
-  $('heute').textContent = fmtE(leer(tv[iso(heute)]) ? NaN : tv[iso(heute)] * m.faktor, m.dez, m.einheit);
-  $('gestern').textContent = fmtE(leer(tv[iso(gestern)]) ? NaN : tv[iso(gestern)] * m.faktor, m.dez, m.einheit);
+  const tagKpi = (id, d) => {
+    const v = tv[iso(d)];
+    $(id).textContent = fmtE(leer(v) ? NaN : v * m.faktor, m.dez, m.einheit);
+    $(id + 'E').textContent = leer(v) ? '' : eur(v * preis(medium, iso(d)));
+  };
+  tagKpi('heute', heute);
+  tagKpi('gestern', gestern);
 
-  // Monat
-  const monatPrefix = iso(heute).slice(0, 7);
-  const imMonat = Object.entries(tv).filter(([d]) => d.startsWith(monatPrefix));
-  $('monat').textContent = imMonat.length ? fmtE(imMonat.reduce((s, [, v]) => s + v, 0) * m.faktor, m.dez, m.einheit) : '–';
+  // Monat und Jahr
+  const summeKpi = (id, prefix) => {
+    const e = Object.entries(tv).filter(([d]) => d.startsWith(prefix));
+    $(id).textContent = e.length ? fmtE(e.reduce((s, [, v]) => s + v, 0) * m.faktor, m.dez, m.einheit) : '–';
+    $(id + 'E').textContent = e.length ? eur(kostenTage(e, medium)) : '';
+  };
+  summeKpi('monat', iso(heute).slice(0, 7));
+  summeKpi('jahr', iso(heute).slice(0, 4));
+
+  // Letzte Stunde: letzter Stand minus Stand 60 Minuten davor
+  const vorher = mitWert && daten.messungen.find(x => !leer(x[m.feld]) && Math.abs(new Date(mitWert.zeit) - new Date(x.zeit) - 36e5) < 6e4);
+  const sv = vorher ? Number(mitWert[m.feld]) - Number(vorher[m.feld]) : NaN;
+  $('stunde').textContent = fmtE(sv * m.faktor, m.dez, m.einheit);
+  $('stundeE').textContent = vorher ? eur(sv * preis(medium, iso(new Date(mitWert.zeit)))) : '';
 
   // Viertelstunden – letzte 24 h
   const vs = viertelstunden(m.feld).filter(x => Date.now() - x.ende <= 864e5);
@@ -235,7 +282,8 @@ function anzeigen() {
     (i, v) => {
       const x = vs[i];
       const zeile = hhmm(x.start) + '–' + hhmm(x.ende) + ': ' + fmtE(v, m.viertelDez, m.einheit);
-      return medium === 'strom' ? [zeile, 'Ø Leistung: ' + fmt(v * 4, 2) + ' kW'] : zeile;
+      const k = eur(x.wert * preis(medium, iso(x.start)));
+      return medium === 'strom' ? [zeile, 'Ø Leistung: ' + fmt(v * 4, 2) + ' kW', k] : [zeile, k];
     });
 
   // Tage: höchstens 30, nur ab dem ersten Tag mit Wert
@@ -252,9 +300,12 @@ function anzeigen() {
   }
   const vorhanden = tWerte.filter(v => v !== null);
   $('schnitt').textContent = vorhanden.length ? fmtE(vorhanden.reduce((a, b) => a + b, 0) / vorhanden.length, m.dez, m.einheit) : '–';
+  const imSchnitt = tDaten.map(iso).filter(k => tv[k] !== undefined).map(k => [k, tv[k]]);
+  $('schnittE').textContent = imSchnitt.length ? eur(kostenTage(imSchnitt, medium) / imSchnitt.length) : '';
   $('tTage').textContent = 'Tagesverbrauch' + (tLabels.length >= 30 ? ' – letzte 30 Tage' : '') + ' (' + m.einheit + ')';
   chart('cTage', 'bar', tLabels, tWerte, m.farbe,
-    (i, v) => tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit));
+    (i, v) => [tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit),
+               eur(v / m.faktor * preis(medium, iso(tDaten[i])))]);
 
   // Monate: höchstens 12, nur ab dem ersten Monat mit Wert
   const mon = {};
@@ -272,8 +323,13 @@ function anzeigen() {
     }
   }
   $('tMonate').textContent = 'Monatsverbrauch' + (mLabels.length >= 12 ? ' – letzte 12 Monate' : '') + ' (' + m.einheit + ')';
+  const monatKosten = {};
+  Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); monatKosten[k] = (monatKosten[k] || 0) + v * preis(medium, d); });
   chart('cMonate', 'bar', mLabels, mWerte, m.farbe,
-    (i, v) => mDaten[i].toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit));
+    (i, v) => {
+      const d = mDaten[i], k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+      return [d.toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit), eur(monatKosten[k])];
+    });
 
   // Gas-Extras: stündlicher Verbrauch + Außentemperatur
   if (medium === 'gas') {
@@ -290,7 +346,7 @@ function anzeigen() {
       tmp.push(leer(st[i].temp) ? null : Number(st[i].temp));
     }
     chart('cGasStunde', 'bar', lab, verb, m.farbe,
-      (i, v) => hhmm(std[i][0]) + '–' + hhmm(std[i][1]) + ': ' + fmtE(v, 3, 'm³'),
+      (i, v) => [hhmm(std[i][0]) + '–' + hhmm(std[i][1]) + ': ' + fmtE(v, 3, 'm³'), eur(v * preis('gas', iso(std[i][0])))],
       {
         datasets: [{ type:'line', data: tmp, borderColor:'#8e8e93', backgroundColor:'#8e8e93', pointRadius: tmp.length < 20 ? 3 : 0,
                      pointHoverRadius: 5, tension:.3, spanGaps:true, yAxisID:'yT' }],
@@ -305,8 +361,51 @@ function anzeigen() {
   // Strom-Extras
   if (medium === 'strom') {
     $('leistung').textContent = fmtE(leer(letzte.leistung) ? NaN : Number(letzte.leistung), 0, 'W') + ' (' + hhmm(zeit) + ')';
+    // nur Bezug kostet Geld; bei Einspeisung (negative Leistung) 0 €
+    $('leistungE').textContent = leer(letzte.leistung) ? '–' : eur(Math.max(0, Number(letzte.leistung)) / 1000 * preis('strom', iso(zeit))) + '/h';
     const ev = tagesVerbrauch('export');
     $('einspeisung').textContent = fmtE(leer(ev[iso(heute)]) ? NaN : ev[iso(heute)], 2, 'kWh');
+  }
+}
+
+// Preisfelder mit den heute gültigen Preisen füllen (nicht während der Eingabe)
+function preiseFuellen() {
+  const h = iso(new Date());
+  [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser']].forEach(([id, med]) => {
+    if (document.activeElement === $(id)) return;
+    const p = preis(med, h);
+    $(id).value = leer(p) ? '' : String(p).replace('.', ',');
+  });
+}
+
+// Speichern braucht den WRITE_KEY. Er wird einmal abgefragt und nur in diesem Browser gemerkt.
+async function preiseSpeichern() {
+  let key = '';
+  try { key = localStorage.getItem('hvKey') || ''; } catch (e) {}
+  if (!key) key = (prompt('Schreib-Key (WRITE_KEY aus dem Apps Script):') || '').trim();
+  if (!key) return;
+  const h = iso(new Date());
+  const neu = [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser']]
+    .filter(([id]) => $(id).value.trim() !== '')
+    .map(([id, med]) => ({ med, wert: Number($(id).value.replace(',', '.').trim()) }));
+  if (neu.some(x => isNaN(x.wert) || x.wert < 0)) { $('pStatus').textContent = 'Ungültige Zahl.'; return; }
+  const geaendert = neu.filter(x => x.wert !== preis(x.med, h));
+  if (!geaendert.length) { $('pStatus').textContent = 'Keine Änderung.'; return; }
+  $('pStatus').textContent = 'speichert …';
+  try {
+    for (const x of geaendert) {
+      const r = await fetch(API, { method:'POST', body: JSON.stringify({ key, aktion:'preis', medium:x.med, preis:x.wert }) });
+      const j = await r.json();
+      if (!j.ok) {
+        if (j.fehler === 'key') { try { localStorage.removeItem('hvKey'); } catch (e) {} throw new Error('Key falsch'); }
+        throw new Error(j.fehler || 'Fehler');
+      }
+    }
+    try { localStorage.setItem('hvKey', key); } catch (e) {}
+    $('pStatus').textContent = 'Gespeichert.';
+    laden();
+  } catch (e) {
+    $('pStatus').textContent = 'Nicht gespeichert: ' + e.message;
   }
 }
 
@@ -318,6 +417,7 @@ async function laden() {
     daten = await r.json();
     if (!daten.ok) throw new Error('Antwort ungültig');
     anzeigen();
+    preiseFuellen();
   } catch (e) {
     $('zeit').textContent = 'Fehler beim Laden: ' + e.message;
   }
@@ -325,6 +425,7 @@ async function laden() {
 
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { medium = b.dataset.m; anzeigen(); });
 $('reload').onclick = laden;
+$('pSpeichern').onclick = preiseSpeichern;
 laden();
 setInterval(laden, 5 * 60 * 1000);
 </script>
