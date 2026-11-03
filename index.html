@@ -130,7 +130,7 @@ function anzeigen() {
   if (!letzte) { $('zeit').textContent = 'Noch keine Daten im Sheet.'; return; }
 
   const zeit = new Date(letzte.zeit);
-  // Gas/Wasser stehen nur stündlich im Sheet: letzte Messung mit Wert suchen
+  // letzte Messung mit Wert suchen (ältere Zeilen haben Gas/Wasser nur stündlich)
   const mitWert = [...daten.messungen].reverse().find(x => x[m.feld] !== '' && x[m.feld] !== null && x[m.feld] !== undefined);
   const abl = mitWert && (medium === 'gas' ? mitWert.gasZeit : medium === 'wasser' ? mitWert.wasserZeit : null);
   $('stand').textContent = mitWert ? fmt(Number(mitWert[m.feld]), m.standDez) + ' ' + m.standEinheit : '–';
@@ -175,7 +175,8 @@ function anzeigen() {
 
   // Gas-Extras: stündlicher Verbrauch + Außentemperatur
   if (medium === 'gas') {
-    const st = daten.messungen.filter(x => x.gas !== '' && x.gas !== null && x.gas !== undefined);
+    // nur volle Stunden (Gas steht jetzt jede Viertelstunde im Sheet, Diagramm bleibt stündlich)
+    const st = daten.messungen.filter(x => x.gas !== '' && x.gas !== null && x.gas !== undefined && new Date(x.zeit).getMinutes() === 0);
     const mitTemp = [...st].reverse().find(x => x.temp !== '' && x.temp !== null && x.temp !== undefined);
     $('temp').textContent = mitTemp ? fmt(Number(mitTemp.temp), 1) + ' °C (' +
       new Date(mitTemp.zeit).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }) + ')' : '–';

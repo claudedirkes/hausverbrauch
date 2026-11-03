@@ -1,4 +1,5 @@
-// Hausverbrauch-Bridge: ESP32-CAM liest alle 15 Min. den HomeWizard P1 (lokale API)
+// Hausverbrauch-Bridge: ESP32-CAM liest im festen 15-Min.-Raster (wie Leneda: :00/:15/:30/:45,
+// jeweils 45 s danach, Uhrzeit per NTP) den HomeWizard P1 (lokale API)
 // und schickt Strom, Gas und Wasser an das Google Apps Script "Hausverbrauch".
 // WLAN wird beim ersten Start über das Setup-WLAN "Hausverbrauch-Setup" eingegeben (WiFiManager).
 // Bibliotheken: ArduinoJson (v7), WiFiManager (tzapu).
@@ -22,10 +23,13 @@
 const char* HW_URL     = "http://192.168.178.79/api/v1/data";
 const char* SCRIPT_URL = "https://script.google.com/macros/s/DEINE_ID/exec";
 const char* WRITE_KEY  = "GLEICHER_KEY_WIE_IM_APPS_SCRIPT";
-const unsigned long INTERVALL_MS = 15UL * 60UL * 1000UL;  // 15 Minuten
+const long RASTER_S  = 15L * 60L;  // Raster 15 Minuten (wie Leneda)
+const long VERSATZ_S = 45;         // 45 s nach dem Rasterpunkt abfragen: Gas/Wasser (alle 5 Min.) sind dann aktuell
+const long NACHHOLEN_S = 5L * 60L; // fehlgeschlagene Abfrage bis 5 Min. nach dem Rasterpunkt wiederholen
+const char* ZEITZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Luxemburg inkl. Sommerzeit
 // --------------------------------------------
 
-const int FW_VERSION = 5;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 6;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -129,9 +133,10 @@ void datenLive() {
   server.send(200, "application/json", body);
 }
 
-unsigned long letzterLauf = 0;
-bool ersterLauf = true;
-int fehlerInFolge = 0;
+long letzterSlot = 0;          // zuletzt erfolgreich gesendeter Rasterpunkt (Unix-Zeit)
+long versuchterSlot = 0;       // Rasterpunkt, für den gerade Versuche laufen
+unsigned long letzterVersuchMs = 0;
+int fehlerInFolge = 0;         // verpasste Rasterpunkte in Folge
 
 void wlanVerbinden() {
   if (WiFi.status() == WL_CONNECTED) return;
@@ -146,7 +151,7 @@ void wlanVerbinden() {
 }
 
 // HomeWizard abfragen und Sendedaten als JSON-Text zurückgeben ("" bei Fehler)
-String homewizardLesen() {
+String homewizardLesen(long slot) {
   HTTPClient http;
   http.begin(HW_URL);
   http.setTimeout(8000);
@@ -169,6 +174,7 @@ String homewizardLesen() {
   JsonDocument out;
   out["key"]              = writeKey;
   out["fw"]               = FW_VERSION;
+  out["slot"]             = slot;   // Rasterpunkt (Unix-Zeit, UTC), auf den sich die Zählerstände beziehen
   out["strom_import_kwh"] = hw["total_power_import_kwh"];
   out["strom_export_kwh"] = hw["total_power_export_kwh"];
   out["leistung_w"]       = hw["active_power_w"];
@@ -265,24 +271,47 @@ void otaPruefen() {
   if (verfuegbareVersion() > FW_VERSION) otaInstallieren();
 }
 
-void ablesen() {
+// Ein Versuch für den Rasterpunkt slot. true = gesendet.
+bool ablesen(long slot) {
   wlanVerbinden();
-  if (WiFi.status() != WL_CONNECTED) { fehlerInFolge++; return; }
+  if (WiFi.status() != WL_CONNECTED) return false;
+  String body = homewizardLesen(slot);
+  if (body.isEmpty() || !anScriptSenden(body)) return false;
+  diagLetzterVersand = "vor 0 min";
+  letzterVersandMs = millis();
+  Serial.println("Gesendet: " + body);
+  return true;
+}
 
-  String body = homewizardLesen();
-  if (body.isEmpty() || !anScriptSenden(body)) {
-    fehlerInFolge++;
-  } else {
-    fehlerInFolge = 0;
-    diagLetzterVersand = "vor 0 min";
-    letzterVersandMs = millis();
-    Serial.println("Gesendet: " + body);
+bool zeitOk() { return time(nullptr) > 1700000000; }  // NTP-Zeit vorhanden?
+
+// Im Raster :00/:15/:30/:45 (+45 s) abfragen; bei Fehler jede Minute neu versuchen, max. 5 Min. lang
+void rasterPruefen() {
+  if (!zeitOk()) return;
+  long jetzt = (long)time(nullptr);
+  long slot = jetzt - (jetzt % RASTER_S);   // letzter Rasterpunkt (UTC-Raster = Ortszeit-Raster)
+  long seit = jetzt - slot;
+  if (slot == letzterSlot || seit < VERSATZ_S) return;
+  if (seit > NACHHOLEN_S) {                 // Fenster verpasst
+    if (versuchterSlot == slot) {
+      versuchterSlot = 0;
+      fehlerInFolge++;
+      Serial.printf("Rasterpunkt verpasst (%d in Folge)\n", fehlerInFolge);
+      if (fehlerInFolge >= 8) {             // 2 Stunden ohne Erfolg -> Neustart
+        Serial.println("Zu viele Fehler, Neustart");
+        delay(1000);
+        ESP.restart();
+      }
+    }
+    return;
   }
-
-  if (fehlerInFolge >= 8) {  // ca. 2 Stunden ohne Erfolg -> Neustart
-    Serial.println("Zu viele Fehler, Neustart");
-    delay(1000);
-    ESP.restart();
+  if (versuchterSlot == slot && millis() - letzterVersuchMs < 60000) return;
+  versuchterSlot = slot;
+  letzterVersuchMs = millis();
+  if (ablesen(slot)) {
+    letzterSlot = slot;
+    versuchterSlot = 0;
+    fehlerInFolge = 0;
   }
 }
 
@@ -300,6 +329,9 @@ void setup() {
   }
   Serial.println("WLAN OK " + WiFi.localIP().toString());
   Serial.printf("Firmware-Version %d\n", FW_VERSION);
+  configTzTime(ZEITZONE, "pool.ntp.org", "time.google.com");
+  for (int i = 0; i < 20 && !zeitOk(); i++) delay(500);
+  Serial.println(zeitOk() ? "Uhrzeit OK" : "Uhrzeit noch nicht da, wird nachgeholt");
   zugangLaden();
   otaPruefen();
   letztesOta = millis();
@@ -314,11 +346,7 @@ void setup() {
 }
 
 void loop() {
-  if (ersterLauf || millis() - letzterLauf >= INTERVALL_MS) {
-    ersterLauf = false;
-    letzterLauf = millis();
-    ablesen();
-  }
+  rasterPruefen();
   if (millis() - letztesOta >= OTA_INTERVALL_MS) {
     letztesOta = millis();
     wlanVerbinden();

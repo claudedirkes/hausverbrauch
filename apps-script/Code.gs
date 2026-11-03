@@ -3,7 +3,7 @@
 
 const WRITE_KEY = 'HIER_EIGENEN_KEY_EINTRAGEN';   // gleicher Wert wie WRITE_KEY in der Firmware
 const TZ = 'Europe/Luxembourg';
-const KOPF_AKTUELL = ['Empfangen', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Leistung (W)',
+const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Leistung (W)',
                       'L1 (W)', 'L2 (W)', 'L3 (W)', 'Gas (m³)', 'Wasser (m³)',
                       'L1 (V)', 'L2 (V)', 'L3 (V)', 'L1 (A)', 'L2 (A)', 'L3 (A)',
                       'Gas abgelesen', 'Wasser abgelesen',
@@ -31,37 +31,35 @@ function doPost(e) {
   lock.waitLock(20000);
   try {
     const ss = SpreadsheetApp.getActive();
-    const jetzt = new Date();
+    // Messzeitpunkt = Rasterpunkt der Bridge (:00/:15/:30/:45, wie Leneda). Ältere Firmware: Empfangszeit.
+    const jetzt = d.slot ? new Date(Number(d.slot) * 1000) : new Date();
     const zahl = v => (v === undefined || v === null) ? '' : Number(v);
 
-    // Gas und Wasser nur 1x pro Stunde schreiben (erste Meldung einer neuen Stunde), Strom alle 15 Min.
+    // Doppelte Meldung für denselben Rasterpunkt ignorieren (z. B. Wiederholung nach Zeitüberschreitung)
     const props = PropertiesService.getScriptProperties();
-    const stunde = Utilities.formatDate(jetzt, TZ, 'yyyy-MM-dd HH');
-    const gw = props.getProperty('gwStunde') !== stunde;
-    if (gw) props.setProperty('gwStunde', stunde);
-    const nurGW = v => gw ? v : '';
-    const temp = gw ? aussenTemperatur() : '';   // Außentemperatur stündlich zusammen mit Gas
+    if (d.slot && props.getProperty('letzterSlot') === String(d.slot)) return antwort({ ok: true, doppelt: true });
+    if (d.slot) props.setProperty('letzterSlot', String(d.slot));
+
+    // Außentemperatur stündlich (nur zur vollen Stunde)
+    const temp = Utilities.formatDate(jetzt, TZ, 'mm') === '00' ? aussenTemperatur() : '';
 
     ss.getSheetByName('Aktuell').appendRow([
       jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
-      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), nurGW(zahl(d.gas_m3)), nurGW(zahl(d.wasser_m3)),
+      zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3),
       zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a),
-      nurGW(zeitstempel(d.gas_ts)), nurGW(zeitstempel(d.wasser_ts)),
+      zeitstempel(d.gas_ts), zeitstempel(d.wasser_ts),
       zahl(d.sag_l1), zahl(d.sag_l2), zahl(d.sag_l3),
       zahl(d.swell_l1), zahl(d.swell_l2), zahl(d.swell_l3), zahl(d.stromausfall), temp
     ]);
 
-    // Tagesblatt: eine Zeile pro Tag mit dem jeweils letzten Zählerstand (Endstand)
+    // Tagesblatt: eine Zeile pro Tag mit dem Endstand. Der Stand um 00:00 ist der Endstand des Vortags
+    // (Tagesverbrauch = 00:00 bis 00:00, wie Leneda), deshalb 1 Sekunde zurückrechnen.
     const tage = ss.getSheetByName('Tage');
-    const datum = Utilities.formatDate(jetzt, TZ, 'yyyy-MM-dd');
+    const datum = Utilities.formatDate(new Date(jetzt.getTime() - 1000), TZ, 'yyyy-MM-dd');
     const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
     const letzte = tage.getLastRow();
     const letztesDatum = letzte > 1 ? String(tage.getRange(letzte, 1).getDisplayValue()) : '';
     if (letztesDatum === datum) {
-      if (!gw) {  // Gas/Wasser-Endstand des Tages nur stündlich aktualisieren
-        const alt = tage.getRange(letzte, 4, 1, 2).getValues()[0];
-        zeile[3] = alt[0]; zeile[4] = alt[1];
-      }
       tage.getRange(letzte, 1, 1, zeile.length).setValues([zeile]);
     } else {
       tage.appendRow(zeile);
