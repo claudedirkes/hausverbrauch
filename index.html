@@ -138,7 +138,7 @@
       <label>⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
       <label>🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
       <label>💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
-      <label>🤝 Strom geteilt (€/kWh)<input id="pGeteilt" type="text" inputmode="decimal" placeholder="fehlt"></label>
+      <label id="lGeteilt" style="display:none">🤝 Strom geteilt (€/kWh)<input id="pGeteilt" type="text" inputmode="decimal" placeholder="fehlt"></label>
       <label>📏 Referenzleistung (kW)<input id="pReferenz" type="text" inputmode="decimal"></label>
     </div>
     <div class="preisZeile">
@@ -316,6 +316,7 @@ function anzeigen() {
   });
   const gtText = (gesamt, g) => leer(g) ? [] : ['davon geteilt: ' + fmtE(g, 2, 'kWh') + ' (' + fmt(gesamt ? g / gesamt * 100 : 0, 0) + ' %)',
                                                  'vom Lieferanten: ' + fmtE(gesamt - g, 2, 'kWh')];
+  $('lGeteilt').style.display = Object.keys(GT).length ? 'flex' : 'none';
   document.querySelectorAll('.gtLeg').forEach(e => e.style.display = mitGT ? 'block' : 'none');
   const tv = tagesVerbrauch(m.feld);
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
