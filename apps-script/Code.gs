@@ -50,6 +50,46 @@ function preiseBlatt() {
   return sh;
 }
 
+// Historie (Leneda-Import): eine Zeile pro Tag. Eigene P1-Messungen im Blatt "Tage" haben in der WebApp Vorrang.
+const KOPF_HIST = ['Datum', 'Strom Bezug (kWh)', 'Strom über Referenz (kWh)', 'Gas (m³)'];
+const HIST_SPALTE = { strom: 1, gas: 3 };   // Index in KOPF_HIST
+
+function historieBlatt() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('Historie');
+  if (!sh) {
+    sh = ss.insertSheet('Historie');
+    sh.getRange(1, 1, 1, KOPF_HIST.length).setValues([KOPF_HIST]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+// Tageswerte aus der WebApp übernehmen: d.medium = 'strom' | 'gas', d.tage = [{datum, wert, ueber}]
+// Vorhandene Tage werden überschrieben (kein Doppeltzählen), andere Spalten bleiben unberührt.
+function historieSpeichern(d) {
+  const sp = HIST_SPALTE[d.medium];
+  if (sp === undefined || !Array.isArray(d.tage)) return antwort({ ok: false, fehler: 'ungültiger Import' });
+  const sh = historieBlatt();
+  const n = sh.getLastRow() - 1;
+  const zeilen = n > 0 ? sh.getRange(2, 1, n, KOPF_HIST.length).getValues() : [];
+  const map = {};
+  zeilen.forEach(r => {
+    const k = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
+    if (k) map[k] = r;
+  });
+  d.tage.forEach(t => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.datum)) return;
+    const r = map[t.datum] || (map[t.datum] = [t.datum, '', '', '']);
+    r[sp] = Number(t.wert);
+    if (d.medium === 'strom') r[2] = Number(t.ueber) || 0;
+  });
+  const alle = Object.keys(map).sort().map(k => { const r = map[k]; r[0] = k; return r; });
+  sh.getRange(2, 1, alle.length, 1).setNumberFormat('@');
+  sh.getRange(2, 1, alle.length, KOPF_HIST.length).setValues(alle);
+  return antwort({ ok: true, tage: d.tage.length });
+}
+
 // Wert aus "Preise", der am Tag datum (yyyy-MM-dd) galt
 function wertAm(medium, datum) {
   const sh = preiseBlatt();
@@ -113,6 +153,7 @@ function doPost(e) {
   const d = JSON.parse(e.postData.contents);
   if (d.key !== WRITE_KEY) return antwort({ ok: false, fehler: 'key' });
   if (d.aktion === 'preis') return preisSpeichern(d);
+  if (d.aktion === 'historie') return historieSpeichern(d);
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -194,9 +235,18 @@ function doGet() {
                  ab: r[3] instanceof Date ? Utilities.formatDate(r[3], TZ, 'yyyy-MM-dd') : String(r[3]) }))
     .filter(p => p.medium && !isNaN(p.preis)) : [];
 
+  const hi = ss.getSheetByName('Historie');
+  const nH = hi ? Math.max(0, hi.getLastRow() - 1) : 0;
+  const zahlOderNull = v => (v === '' || v === null) ? null : Number(v);
+  const historie = nH ? hi.getRange(2, 1, nH, KOPF_HIST.length).getValues().map(r => ({
+    datum: r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]),
+    strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3])
+  })) : [];
+
   return antwort({
     ok: true,
     preise: preise,
+    historie: historie,
     messungen: messungen.map(r => ({
       zeit: r[0] instanceof Date ? r[0].toISOString() : r[0],
       import: r[1], export: r[2], leistung: r[3], l1: r[4], l2: r[5], l3: r[6], gas: r[7], wasser: r[8],

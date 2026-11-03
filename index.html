@@ -116,7 +116,12 @@
     </div>
     <div class="card">
       <div class="titel" id="tMonate">Monatsverbrauch</div>
+      <div class="muted" id="mLegende" style="display:none">grau = gleicher Monat im Vorjahr</div>
       <div class="chart"><canvas id="cMonate"></canvas><div class="leer">Noch keine Monatswerte.</div></div>
+    </div>
+    <div class="card breit">
+      <div class="titel" id="tJahre">Jahresverbrauch</div>
+      <div class="chart"><canvas id="cJahre"></canvas><div class="leer">Noch keine Jahreswerte.</div></div>
     </div>
   </div>
 
@@ -133,6 +138,17 @@
       <button id="pSpeichern" type="button" class="haupt">Preise speichern</button>
       <span class="muted" id="pStatus"></span>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="titel">Leneda-Import</div>
+    <div class="muted">CSV-Export aus dem Leneda-Portal wählen (Strom Bezug oder Gas, auch mehrere Dateien). Die Werte werden zu
+      Tageswerten zusammengefasst und im Blatt „Historie“ gespeichert. Bereits vorhandene Tage werden überschrieben, nicht doppelt gezählt.</div>
+    <div class="preisZeile">
+      <input id="lDatei" type="file" accept=".csv,text/csv" multiple style="font-size:14px;max-width:100%">
+      <button id="lImport" type="button" class="haupt">Importieren</button>
+    </div>
+    <div class="muted" id="lStatus" style="margin-top:8px;white-space:pre-line"></div>
   </div>
 </div>
 
@@ -185,13 +201,24 @@ const eur = v => leer(v) ? '' : Number(v).toLocaleString('de-DE', { style:'curre
 const kostenTage = (eintraege, med) => eintraege.reduce((s, [d, v]) => s + v * preis(med, d), 0);
 
 // Tagesverbrauch = Endstand Tag minus Endstand Vortag
+// Tage ohne eigene Messung werden aus der Historie (Leneda-Import) ergänzt
+const HIST_FELD = { import: 'strom', gas: 'gas' };
 function tagesVerbrauch(feld) {
   const t = daten.tage, out = {};
   for (let i = 1; i < t.length; i++) {
     const a = t[i - 1][feld], b = t[i][feld];
     if (!isNaN(a) && !isNaN(b)) out[t[i].datum] = b - a;
   }
+  const hf = HIST_FELD[feld];
+  if (hf) (daten.historie || []).forEach(h => { if (out[h.datum] === undefined && !leer(h[hf])) out[h.datum] = Number(h[hf]); });
   return out;
+}
+// kWh über Referenz je Tag (eigene Messung vor Historie)
+function ueberTage() {
+  const ue = {};
+  (daten.historie || []).forEach(h => { if (!leer(h.ueber)) ue[h.datum] = Number(h.ueber); });
+  daten.tage.forEach(t => { if (!leer(t.ueber)) ue[t.datum] = t.ueber; });
+  return ue;
 }
 
 // Diagramm zeichnen. Ohne Werte: Hinweistext statt leerer Achsen.
@@ -216,7 +243,7 @@ function chart(id, typ, labels, werte, farbe, tipp, extra = {}) {
       plugins: {
         legend: { display: false },
         tooltip: { displayColors: false, padding: 10, titleFont: { size: 13 }, bodyFont: { size: 14, weight: 'bold' },
-                   callbacks: { title: () => '', label: c => c.datasetIndex === 0 ? tipp(c.dataIndex, c.raw) : (extra.tipp2 ? extra.tipp2(c.raw) : null) } }
+                   callbacks: { title: () => '', label: c => c.datasetIndex === 0 ? tipp(c.dataIndex, c.raw) : (extra.tipp2 ? extra.tipp2(c.raw, c.dataIndex) : null) } }
       },
       scales: Object.assign({
         x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
@@ -326,8 +353,7 @@ function anzeigen() {
   const imSchnitt = tDaten.map(iso).filter(k => tv[k] !== undefined).map(k => [k, tv[k]]);
   $('schnittE').textContent = imSchnitt.length ? eur(kostenTage(imSchnitt, medium) / imSchnitt.length) : '';
   $('tTage').textContent = 'Tagesverbrauch' + (tLabels.length >= 30 ? ' – letzte 30 Tage' : '') + ' (' + m.einheit + ')';
-  const ueTag = {};
-  daten.tage.forEach(t => { if (!leer(t.ueber)) ueTag[t.datum] = t.ueber; });
+  const ueTag = ueberTage();
   chart('cTage', 'bar', tLabels, tWerte, m.farbe,
     (i, v) => [tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit),
                eur(v / m.faktor * preis(medium, iso(tDaten[i])))]
@@ -337,7 +363,8 @@ function anzeigen() {
   const mon = {};
   Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); mon[k] = (mon[k] || 0) + v; });
   const monate = Object.keys(mon).sort();
-  const mLabels = [], mWerte = [], mDaten = [];
+  const mLabels = [], mWerte = [], mDaten = [], mVorjahr = [];
+  const mKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
   if (monate.length) {
     for (let i = 11; i >= 0; i--) {
       const d = new Date(heute.getFullYear(), heute.getMonth() - i, 1);
@@ -346,15 +373,49 @@ function anzeigen() {
       mDaten.push(d);
       mLabels.push(d.toLocaleDateString('de-DE', { month:'short', year:'2-digit' }));
       mWerte.push(mon[k] !== undefined ? +(mon[k] * m.faktor).toFixed(m.dez) : null);
+      const kv = mKey(new Date(d.getFullYear() - 1, d.getMonth(), 1));
+      mVorjahr.push(mon[kv] !== undefined ? +(mon[kv] * m.faktor).toFixed(m.dez) : null);
     }
   }
+  const mitVorjahr = mVorjahr.some(v => v !== null);
+  $('mLegende').style.display = mitVorjahr ? 'block' : 'none';
+  // laufender Monat: Vorjahr bis zum selben Tag, damit der Vergleich fair ist
+  const tagHeute = iso(heute).slice(8, 10);
+  const vorjahrBisHeute = Object.entries(tv)
+    .filter(([d]) => d.slice(0, 7) === mKey(new Date(heute.getFullYear() - 1, heute.getMonth(), 1)) && d.slice(8, 10) <= tagHeute)
+    .reduce((s2, [, v]) => s2 + v, 0);
   $('tMonate').textContent = 'Monatsverbrauch' + (mLabels.length >= 12 ? ' – letzte 12 Monate' : '') + ' (' + m.einheit + ')';
   const monatKosten = {};
   Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); monatKosten[k] = (monatKosten[k] || 0) + v * preis(medium, d); });
   chart('cMonate', 'bar', mLabels, mWerte, m.farbe,
     (i, v) => {
-      const d = mDaten[i], k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-      return [d.toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit), eur(monatKosten[k])];
+      const d = mDaten[i], k = mKey(d);
+      const out = [d.toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit), eur(monatKosten[k])];
+      const vj = k === iso(heute).slice(0, 7) ? vorjahrBisHeute * m.faktor : mVorjahr[i];
+      if (!leer(vj) && vj > 0) {
+        const pct = (v - vj) / vj * 100;
+        out.push('Vorjahr' + (k === iso(heute).slice(0, 7) ? ' bis ' + tagHeute + '.' : '') + ': ' + fmtE(vj, m.dez, m.einheit) +
+                 ' (' + (pct >= 0 ? '+' : '') + fmt(pct, 0) + ' %)');
+      }
+      return out;
+    },
+    mitVorjahr ? {
+      datasets: [{ type:'bar', data: mVorjahr, backgroundColor:'#9aa5b1', borderColor:'#9aa5b1', borderRadius:3, maxBarThickness:40, yAxisID:'y' }],
+      tipp2: (v, i) => leer(v) ? null : 'Vorjahr gesamt: ' + fmtE(v, m.dez, m.einheit) + ' · ' + eur(monatKosten[mKey(new Date(mDaten[i].getFullYear() - 1, mDaten[i].getMonth(), 1))])
+    } : {});
+
+  // Jahre: Summe pro Kalenderjahr
+  const jahre = {}, jahrKosten = {}, jahrTage = {};
+  Object.entries(tv).forEach(([d, v]) => {
+    const k = d.slice(0, 4);
+    jahre[k] = (jahre[k] || 0) + v; jahrKosten[k] = (jahrKosten[k] || 0) + v * preis(medium, d); jahrTage[k] = (jahrTage[k] || 0) + 1;
+  });
+  const jListe = Object.keys(jahre).sort();
+  $('tJahre').textContent = 'Jahresverbrauch (' + m.einheit + ')';
+  chart('cJahre', 'bar', jListe, jListe.map(k => +(jahre[k] * m.faktor).toFixed(m.dez)), m.farbe,
+    (i, v) => {
+      const k = jListe[i];
+      return [k + ': ' + fmtE(v, m.dez, m.einheit), eur(jahrKosten[k]), jahrTage[k] + ' Tage mit Daten'];
     });
 
   // Gas-Extras: stündlicher Verbrauch + Außentemperatur
@@ -386,8 +447,7 @@ function anzeigen() {
 
   // Strom-Extras
   if (medium === 'strom') {
-    const ue = {};
-    daten.tage.forEach(t => { if (!leer(t.ueber)) ue[t.datum] = t.ueber; });
+    const ue = ueberTage();
     const ueSumme = prefix => { const e = Object.entries(ue).filter(([d]) => d.startsWith(prefix)); return e.length ? e.reduce((s, [, v]) => s + v, 0) : NaN; };
     $('refKw').textContent = fmtE(preis('referenz', iso(heute)), 1, 'kW');
     $('ueHeute').textContent = fmtE(ue[iso(heute)], 2, 'kWh');
@@ -413,11 +473,94 @@ function preiseFuellen() {
   });
 }
 
-// Speichern braucht den WRITE_KEY. Er wird einmal abgefragt und nur in diesem Browser gemerkt.
-async function preiseSpeichern() {
+// Key aus dem Browser holen oder einmal abfragen
+function schreibKey() {
   let key = '';
   try { key = localStorage.getItem('hvKey') || ''; } catch (e) {}
   if (!key) key = (prompt('Schreib-Key (WRITE_KEY aus dem Apps Script):') || '').trim();
+  return key;
+}
+async function senden(key, obj) {
+  const r = await fetch(API, { method:'POST', body: JSON.stringify(Object.assign({ key }, obj)) });
+  const j = await r.json();
+  if (!j.ok) {
+    if (j.fehler === 'key') { try { localStorage.removeItem('hvKey'); } catch (e) {} throw new Error('Key falsch'); }
+    throw new Error(j.fehler || 'Fehler');
+  }
+  try { localStorage.setItem('hvKey', key); } catch (e) {}
+  return j;
+}
+
+// Leneda-CSV lesen: Spalten "Started at", "Value (…)", "Unit", "Interval length (min)", "OBIS code".
+// Strom: kW-Mittelwert je Intervall → kWh = kW × Minuten / 60. Tag = Ortsdatum des Intervallbeginns.
+const tagLux = d => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Luxembourg' });
+function lenedaLesen(text) {
+  const zeilen = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(z => z.trim());
+  const teile = z => z.split(/[,;](?=(?:[^"]*"[^"]*")*[^"]*$)/).map(x => x.replace(/^"|"$/g, '').trim());
+  const kopf = teile(zeilen[0]);
+  const sp = name => kopf.findIndex(k => k.toLowerCase().startsWith(name));
+  const iZeit = sp('started at'), iWert = sp('value'), iEinheit = sp('unit'), iInt = sp('interval length'), iObis = sp('obis');
+  if (iZeit < 0 || iWert < 0 || iEinheit < 0) throw new Error('Unbekanntes Format (Spalten fehlen)');
+  const erste = teile(zeilen[1] || '');
+  const obis = iObis >= 0 ? erste[iObis] : '';
+  const einheit = erste[iEinheit];
+  let medium;
+  if (obis === '1-1:1.29.0') medium = 'strom';
+  else if (obis.startsWith('7-')) medium = 'gas';
+  else throw new Error('OBIS ' + obis + ' wird nicht unterstützt (nur Strom Bezug 1-1:1.29.0 und Gas)');
+  if (medium === 'strom' && einheit !== 'kW' && einheit !== 'kWh') throw new Error('Einheit ' + einheit + ' bei Strom unerwartet');
+  if (medium === 'gas' && !/^N?m3$|^N?m³$/i.test(einheit)) throw new Error('Gas in ' + einheit + ' – bitte Claude Bescheid geben, Umrechnung fehlt noch');
+  const tage = {};
+  for (let i = 1; i < zeilen.length; i++) {
+    const f = teile(zeilen[i]);
+    const start = new Date(f[iZeit]);
+    const wert = Number(String(f[iWert]).replace(',', '.'));
+    if (isNaN(start) || isNaN(wert)) continue;
+    const min = iInt >= 0 ? Number(f[iInt]) || 15 : 15;
+    const menge = (f[iEinheit] === 'kW') ? wert * min / 60 : wert;
+    const tag = tagLux(start);
+    const t = tages(tage, tag);
+    t.wert += menge;
+    if (medium === 'strom') {
+      const ref = preis('referenz', tag);
+      if (!leer(ref)) t.ueber += Math.max(0, menge - ref * min / 60);
+    }
+  }
+  return { medium, tage };
+}
+const tages = (o, k) => o[k] || (o[k] = { wert: 0, ueber: 0 });
+
+async function lenedaImport() {
+  const dateien = [...$('lDatei').files];
+  if (!dateien.length) { $('lStatus').textContent = 'Bitte zuerst eine CSV-Datei wählen.'; return; }
+  if (!daten) { $('lStatus').textContent = 'Daten noch nicht geladen.'; return; }
+  const key = schreibKey();
+  if (!key) return;
+  const log = [];
+  for (const f of dateien) {
+    try {
+      $('lStatus').textContent = log.concat(f.name + ': liest …').join('\n');
+      const { medium, tage } = lenedaLesen(await f.text());
+      const liste = Object.keys(tage).sort().map(d => ({ datum: d, wert: +tage[d].wert.toFixed(3), ueber: +tage[d].ueber.toFixed(3) }));
+      if (!liste.length) throw new Error('keine Werte gefunden');
+      for (let i = 0; i < liste.length; i += 400) {   // in Paketen senden
+        $('lStatus').textContent = log.concat(f.name + ': sendet ' + Math.min(i + 400, liste.length) + '/' + liste.length + ' Tage …').join('\n');
+        await senden(key, { aktion:'historie', medium, tage: liste.slice(i, i + 400) });
+      }
+      const summe = liste.reduce((s2, t) => s2 + t.wert, 0);
+      log.push('✓ ' + f.name + ': ' + (medium === 'strom' ? 'Strom' : 'Gas') + ', ' + liste.length + ' Tage (' +
+               liste[0].datum + ' bis ' + liste[liste.length - 1].datum + '), ' + fmtE(summe, 1, medium === 'strom' ? 'kWh' : 'm³'));
+    } catch (e) {
+      log.push('✗ ' + f.name + ': ' + e.message);
+    }
+    $('lStatus').textContent = log.join('\n');
+  }
+  laden();
+}
+
+// Speichern braucht den WRITE_KEY. Er wird einmal abgefragt und nur in diesem Browser gemerkt.
+async function preiseSpeichern() {
+  const key = schreibKey();
   if (!key) return;
   const h = iso(new Date());
   const neu = PREISFELDER
@@ -428,15 +571,7 @@ async function preiseSpeichern() {
   if (!geaendert.length) { $('pStatus').textContent = 'Keine Änderung.'; return; }
   $('pStatus').textContent = 'speichert …';
   try {
-    for (const x of geaendert) {
-      const r = await fetch(API, { method:'POST', body: JSON.stringify({ key, aktion:'preis', medium:x.med, preis:x.wert }) });
-      const j = await r.json();
-      if (!j.ok) {
-        if (j.fehler === 'key') { try { localStorage.removeItem('hvKey'); } catch (e) {} throw new Error('Key falsch'); }
-        throw new Error(j.fehler || 'Fehler');
-      }
-    }
-    try { localStorage.setItem('hvKey', key); } catch (e) {}
+    for (const x of geaendert) await senden(key, { aktion:'preis', medium:x.med, preis:x.wert });
     $('pStatus').textContent = 'Gespeichert.';
     laden();
   } catch (e) {
@@ -461,6 +596,7 @@ async function laden() {
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { medium = b.dataset.m; anzeigen(); });
 $('reload').onclick = laden;
 $('pSpeichern').onclick = preiseSpeichern;
+$('lImport').onclick = lenedaImport;
 laden();
 setInterval(laden, 5 * 60 * 1000);
 </script>
