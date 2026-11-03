@@ -1,0 +1,50 @@
+# Kompiliert die Hausverbrauch-Bridge-Firmware auf GitHub und legt sie als OTA-Datei ab.
+# Läuft bei jeder Änderung am Sketch (oder manuell unter Actions > Firmware bauen > Run workflow).
+# version.txt wird aus FW_VERSION im Sketch übernommen – erst NACH erfolgreichem Kompilieren,
+# damit die ESP32-CAM nie eine Version angeboten bekommt, deren .bin fehlt.
+name: Firmware bauen
+
+on:
+  push:
+    branches: [main]
+    paths: ['firmware/hausverbrauch_bridge/**', '.github/workflows/firmware.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-arduino-cli@v2
+
+      - name: ESP32-Board und Bibliotheken installieren
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.0.7
+          arduino-cli lib install "ArduinoJson@7.2.1" "WiFiManager@2.0.17"
+
+      - name: Kompilieren (AI Thinker ESP32-CAM, Minimal SPIFFS mit OTA)
+        run: |
+          arduino-cli compile -b esp32:esp32:esp32cam:PartitionScheme=min_spiffs \
+            --output-dir build firmware/hausverbrauch_bridge
+
+      - name: OTA-Datei und Version übernehmen
+        run: |
+          cp build/hausverbrauch_bridge.ino.bin firmware/hausverbrauch_ota.bin
+          grep -oP 'FW_VERSION = \K[0-9]+' firmware/hausverbrauch_bridge/hausverbrauch_bridge.ino > firmware/version.txt
+          echo "Version: $(cat firmware/version.txt)"
+
+      - name: Ins Repo schreiben
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add firmware/hausverbrauch_ota.bin firmware/version.txt
+          git diff --cached --quiet && echo "Keine Änderung" && exit 0
+          git commit -m "Firmware v$(cat firmware/version.txt) automatisch kompiliert"
+          git push
