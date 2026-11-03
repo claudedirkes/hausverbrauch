@@ -510,51 +510,65 @@ function lenedaLesen(text) {
   else throw new Error('OBIS ' + obis + ' wird nicht unterstützt (nur Strom Bezug 1-1:1.29.0 und Gas)');
   if (medium === 'strom' && einheit !== 'kW' && einheit !== 'kWh') throw new Error('Einheit ' + einheit + ' bei Strom unerwartet');
   if (medium === 'gas' && !/^N?m3$|^N?m³$/i.test(einheit)) throw new Error('Gas in ' + einheit + ' – bitte Claude Bescheid geben, Umrechnung fehlt noch');
-  const tage = {};
+  const werte = [];
   for (let i = 1; i < zeilen.length; i++) {
     const f = teile(zeilen[i]);
     const start = new Date(f[iZeit]);
     const wert = Number(String(f[iWert]).replace(',', '.'));
     if (isNaN(start) || isNaN(wert)) continue;
     const min = iInt >= 0 ? Number(f[iInt]) || 15 : 15;
-    const menge = (f[iEinheit] === 'kW') ? wert * min / 60 : wert;
-    const tag = tagLux(start);
-    const t = tages(tage, tag);
-    t.wert += menge;
-    if (medium === 'strom') {
-      const ref = preis('referenz', tag);
-      if (!leer(ref)) t.ueber += Math.max(0, menge - ref * min / 60);
-    }
+    werte.push({ ms: start.getTime(), min, menge: (f[iEinheit] === 'kW') ? wert * min / 60 : wert });
   }
-  return { medium, tage };
+  return { medium, werte };
 }
-const tages = (o, k) => o[k] || (o[k] = { wert: 0, ueber: 0 });
 
+// Alle gewählten Dateien lesen, Intervalle nach Zeitpunkt zusammenführen (Überschneidungen zählen nur einmal),
+// dann pro Medium zu Tageswerten verdichten und in wenigen Paketen senden.
 async function lenedaImport() {
   const dateien = [...$('lDatei').files];
-  if (!dateien.length) { $('lStatus').textContent = 'Bitte zuerst eine CSV-Datei wählen.'; return; }
+  if (!dateien.length) { $('lStatus').textContent = 'Bitte zuerst CSV-Dateien wählen.'; return; }
   if (!daten) { $('lStatus').textContent = 'Daten noch nicht geladen.'; return; }
   const key = schreibKey();
   if (!key) return;
-  const log = [];
-  for (const f of dateien) {
+  const fehler = [], intervalle = { strom: new Map(), gas: new Map() }, anzDateien = { strom: 0, gas: 0 };
+  for (let n = 0; n < dateien.length; n++) {
+    const f = dateien[n];
+    $('lStatus').textContent = 'Lese Datei ' + (n + 1) + '/' + dateien.length + ' …';
     try {
-      $('lStatus').textContent = log.concat(f.name + ': liest …').join('\n');
-      const { medium, tage } = lenedaLesen(await f.text());
-      const liste = Object.keys(tage).sort().map(d => ({ datum: d, wert: +tage[d].wert.toFixed(3), ueber: +tage[d].ueber.toFixed(3) }));
-      if (!liste.length) throw new Error('keine Werte gefunden');
-      for (let i = 0; i < liste.length; i += 400) {   // in Paketen senden
-        $('lStatus').textContent = log.concat(f.name + ': sendet ' + Math.min(i + 400, liste.length) + '/' + liste.length + ' Tage …').join('\n');
-        await senden(key, { aktion:'historie', medium, tage: liste.slice(i, i + 400) });
-      }
-      const summe = liste.reduce((s2, t) => s2 + t.wert, 0);
-      log.push('✓ ' + f.name + ': ' + (medium === 'strom' ? 'Strom' : 'Gas') + ', ' + liste.length + ' Tage (' +
-               liste[0].datum + ' bis ' + liste[liste.length - 1].datum + '), ' + fmtE(summe, 1, medium === 'strom' ? 'kWh' : 'm³'));
-    } catch (e) {
-      log.push('✗ ' + f.name + ': ' + e.message);
-    }
-    $('lStatus').textContent = log.join('\n');
+      const { medium, werte } = lenedaLesen(await f.text());
+      if (!werte.length) throw new Error('keine Werte gefunden');
+      werte.forEach(w => intervalle[medium].set(w.ms, w));
+      anzDateien[medium]++;
+    } catch (e) { fehler.push('✗ ' + f.name + ': ' + e.message); }
   }
+  const log = [];
+  for (const medium of ['strom', 'gas']) {
+    if (!intervalle[medium].size) continue;
+    const tage = {};
+    intervalle[medium].forEach(w => {
+      const tag = tagLux(new Date(w.ms));
+      const t = tage[tag] || (tage[tag] = { wert: 0, ueber: 0 });
+      t.wert += w.menge;
+      if (medium === 'strom') { const ref = preis('referenz', tag); if (!leer(ref)) t.ueber += Math.max(0, w.menge - ref * w.min / 60); }
+    });
+    const liste = Object.keys(tage).sort().map(d => ({ datum: d, wert: +tage[d].wert.toFixed(3), ueber: +tage[d].ueber.toFixed(3) }));
+    const name = medium === 'strom' ? 'Strom' : 'Gas';
+    try {
+      for (let i = 0; i < liste.length; i += 500) {
+        $('lStatus').textContent = log.concat(name + ': sende ' + Math.min(i + 500, liste.length) + '/' + liste.length + ' Tage …').join('\n');
+        await senden(key, { aktion:'historie', medium, tage: liste.slice(i, i + 500) });
+      }
+      // fehlende Tage zwischen erstem und letztem Tag melden
+      const luecken = [];
+      for (let d = new Date(liste[0].datum + 'T12:00'); iso(d) <= liste[liste.length - 1].datum; d = new Date(d.getTime() + 864e5))
+        if (!tage[iso(d)]) luecken.push(iso(d));
+      const summe = liste.reduce((s2, t) => s2 + t.wert, 0);
+      log.push('✓ ' + name + ': ' + anzDateien[medium] + ' Dateien, ' + liste.length + ' Tage (' + liste[0].datum + ' bis ' +
+               liste[liste.length - 1].datum + '), ' + fmtE(summe, 1, medium === 'strom' ? 'kWh' : 'm³') +
+               (luecken.length ? '\n   ⚠ ' + luecken.length + ' Tage fehlen: ' + luecken.slice(0, 8).join(', ') + (luecken.length > 8 ? ' …' : '') : ''));
+    } catch (e) { log.push('✗ ' + name + ': nicht gespeichert – ' + e.message); }
+  }
+  $('lStatus').textContent = log.concat(fehler).join('\n') || 'Nichts importiert.';
   laden();
 }
 
