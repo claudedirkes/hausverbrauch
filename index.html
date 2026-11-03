@@ -37,7 +37,9 @@
   .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
   .kpi .eur { font-size:15px; font-weight:600; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums; }
   .preise { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
-  @media (min-width:640px) { .preise { grid-template-columns:repeat(3,1fr); } }
+  @media (min-width:640px) { .preise { grid-template-columns:repeat(4,1fr); } }
+  .ref { display:flex; flex-wrap:wrap; gap:6px 18px; }
+  .ref b { font-variant-numeric:tabular-nums; }
   .preise label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
   .preise input { font-size:16px; padding:8px 10px; border:1px solid var(--grid); border-radius:8px; background:var(--bg); color:var(--text); }
   .preisZeile { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
@@ -87,6 +89,14 @@
     <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div><div class="eur" id="schnittE"></div></div>
   </div>
 
+  <div class="card nurStrom">
+    <div class="titel">Über Referenzleistung (<span id="refKw">–</span>)</div>
+    <div class="muted ref" style="margin-top:6px">
+      <span>Heute: <b id="ueHeute">–</b></span><span>Gestern: <b id="ueGestern">–</b></span>
+      <span>Dieser Monat: <b id="ueMonat">–</b></span><span>Dieses Jahr: <b id="ueJahr">–</b></span>
+    </div>
+  </div>
+
   <div class="charts">
     <div class="card breit">
       <div class="titel" id="tViertel">Verbrauch pro Viertelstunde – letzte 24 h</div>
@@ -112,11 +122,12 @@
 
   <div class="card" style="margin-top:12px">
     <div class="titel">Preise</div>
-    <div class="muted">Ein neuer Preis gilt ab heute. Vergangene Tage werden mit dem damals gültigen Preis gerechnet.</div>
+    <div class="muted">Ein neuer Wert gilt ab heute. Vergangene Tage werden mit dem damals gültigen Preis gerechnet.</div>
     <div class="preise">
       <label>⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
       <label>🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
       <label>💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
+      <label>📏 Referenzleistung (kW)<input id="pReferenz" type="text" inputmode="decimal"></label>
     </div>
     <div class="preisZeile">
       <button id="pSpeichern" type="button" class="haupt">Preise speichern</button>
@@ -278,13 +289,25 @@ function anzeigen() {
   // Viertelstunden – letzte 24 h
   const vs = viertelstunden(m.feld).filter(x => Date.now() - x.ende <= 864e5);
   $('tViertel').textContent = 'Verbrauch pro Viertelstunde – letzte 24 h (' + m.einheit + ')';
-  chart('cViertel', 'bar', vs.map(x => hhmm(x.start)), vs.map(x => +(x.wert * m.faktor).toFixed(m.viertelDez)), m.farbe,
+  // Strom: Referenzleistung als Strich (kW × 0,25 h = kWh je Viertelstunde), Balken darüber rot
+  const refV = vs.map(x => { const r = preis('referenz', iso(x.start)); return leer(r) ? null : r / 4; });
+  const istStrom = medium === 'strom' && refV.some(v => v !== null);
+  const vFarben = vs.map((x, i) => istStrom && refV[i] !== null && x.wert > refV[i] ? '#c0392b' : m.farbe);
+  chart('cViertel', 'bar', vs.map(x => hhmm(x.start)), vs.map(x => +(x.wert * m.faktor).toFixed(m.viertelDez)), vFarben,
     (i, v) => {
       const x = vs[i];
       const zeile = hhmm(x.start) + '–' + hhmm(x.ende) + ': ' + fmtE(v, m.viertelDez, m.einheit);
       const k = eur(x.wert * preis(medium, iso(x.start)));
-      return medium === 'strom' ? [zeile, 'Ø Leistung: ' + fmt(v * 4, 2) + ' kW', k] : [zeile, k];
-    });
+      if (medium !== 'strom') return [zeile, k];
+      const out = [zeile, 'Ø Leistung: ' + fmt(v * 4, 2) + ' kW', k];
+      if (refV[i] !== null && x.wert > refV[i]) out.push('Über Referenz: ' + fmtE(x.wert - refV[i], 3, 'kWh'));
+      return out;
+    },
+    istStrom ? {
+      datasets: [{ type:'line', data: refV, borderColor:'#c0392b', borderDash:[6, 4], borderWidth:1.5, pointRadius:0,
+                   pointHoverRadius:0, fill:false, stepped:true, yAxisID:'y' }],
+      tipp2: v => 'Referenz: ' + fmt(v * 4, 1) + ' kW (' + fmtE(v, 2, 'kWh') + ')'
+    } : {});
 
   // Tage: höchstens 30, nur ab dem ersten Tag mit Wert
   const tageMitWert = Object.keys(tv).sort();
@@ -303,9 +326,12 @@ function anzeigen() {
   const imSchnitt = tDaten.map(iso).filter(k => tv[k] !== undefined).map(k => [k, tv[k]]);
   $('schnittE').textContent = imSchnitt.length ? eur(kostenTage(imSchnitt, medium) / imSchnitt.length) : '';
   $('tTage').textContent = 'Tagesverbrauch' + (tLabels.length >= 30 ? ' – letzte 30 Tage' : '') + ' (' + m.einheit + ')';
+  const ueTag = {};
+  daten.tage.forEach(t => { if (!leer(t.ueber)) ueTag[t.datum] = t.ueber; });
   chart('cTage', 'bar', tLabels, tWerte, m.farbe,
     (i, v) => [tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit),
-               eur(v / m.faktor * preis(medium, iso(tDaten[i])))]);
+               eur(v / m.faktor * preis(medium, iso(tDaten[i])))]
+              .concat(medium === 'strom' && ueTag[iso(tDaten[i])] > 0 ? ['Über Referenz: ' + fmtE(ueTag[iso(tDaten[i])], 2, 'kWh')] : []));
 
   // Monate: höchstens 12, nur ab dem ersten Monat mit Wert
   const mon = {};
@@ -360,6 +386,14 @@ function anzeigen() {
 
   // Strom-Extras
   if (medium === 'strom') {
+    const ue = {};
+    daten.tage.forEach(t => { if (!leer(t.ueber)) ue[t.datum] = t.ueber; });
+    const ueSumme = prefix => { const e = Object.entries(ue).filter(([d]) => d.startsWith(prefix)); return e.length ? e.reduce((s, [, v]) => s + v, 0) : NaN; };
+    $('refKw').textContent = fmtE(preis('referenz', iso(heute)), 1, 'kW');
+    $('ueHeute').textContent = fmtE(ue[iso(heute)], 2, 'kWh');
+    $('ueGestern').textContent = fmtE(ue[iso(gestern)], 2, 'kWh');
+    $('ueMonat').textContent = fmtE(ueSumme(iso(heute).slice(0, 7)), 2, 'kWh');
+    $('ueJahr').textContent = fmtE(ueSumme(iso(heute).slice(0, 4)), 2, 'kWh');
     $('leistung').textContent = fmtE(leer(letzte.leistung) ? NaN : Number(letzte.leistung), 0, 'W') + ' (' + hhmm(zeit) + ')';
     // nur Bezug kostet Geld; bei Einspeisung (negative Leistung) 0 €
     $('leistungE').textContent = leer(letzte.leistung) ? '–' : eur(Math.max(0, Number(letzte.leistung)) / 1000 * preis('strom', iso(zeit))) + '/h';
@@ -368,10 +402,11 @@ function anzeigen() {
   }
 }
 
+const PREISFELDER = [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser'], ['pReferenz', 'referenz']];
 // Preisfelder mit den heute gültigen Preisen füllen (nicht während der Eingabe)
 function preiseFuellen() {
   const h = iso(new Date());
-  [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser']].forEach(([id, med]) => {
+  PREISFELDER.forEach(([id, med]) => {
     if (document.activeElement === $(id)) return;
     const p = preis(med, h);
     $(id).value = leer(p) ? '' : String(p).replace('.', ',');
@@ -385,7 +420,7 @@ async function preiseSpeichern() {
   if (!key) key = (prompt('Schreib-Key (WRITE_KEY aus dem Apps Script):') || '').trim();
   if (!key) return;
   const h = iso(new Date());
-  const neu = [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser']]
+  const neu = PREISFELDER
     .filter(([id]) => $(id).value.trim() !== '')
     .map(([id, med]) => ({ med, wert: Number($(id).value.replace(',', '.').trim()) }));
   if (neu.some(x => isNaN(x.wert) || x.wert < 0)) { $('pStatus').textContent = 'Ungültige Zahl.'; return; }

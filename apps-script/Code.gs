@@ -11,11 +11,13 @@ const KOPF_AKTUELL = ['Messzeitpunkt', 'Strom Bezug (kWh)', 'Strom Einspeisung (
                       'Überspannung L1', 'Überspannung L2', 'Überspannung L3', 'Stromausfälle',
                       'Außentemp. Diekirch (°C)'];
 const LAT = 49.868, LON = 6.159;   // Diekirch
-const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)'];
+const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas (m³)', 'Wasser (m³)',
+                   'Strom über Referenz (kWh)'];
 // Preise: eine Zeile pro Preisänderung. Ein neuer Preis gilt ab seinem Datum, ältere Tage behalten den alten Preis.
 const KOPF_PREISE = ['Medium', 'Preis (€)', 'Einheit', 'gültig ab'];
-const START_PREISE = [['strom', 0.1793, '€/kWh'], ['gas', 0.431, '€/m³'], ['wasser', 10.45, '€/m³']];
-const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³' };
+// "referenz" = Referenzleistung in kW (Strom). Verbrauch über Referenz je Viertelstunde = max(0, kWh − kW × 0,25 h)
+const START_PREISE = [['strom', 0.1793, '€/kWh'], ['gas', 0.431, '€/m³'], ['wasser', 10.45, '€/m³'], ['referenz', 3, 'kW']];
+const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³', referenz: 'kW' };
 
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
@@ -36,10 +38,59 @@ function preiseBlatt() {
     sh = ss.insertSheet('Preise');
     sh.getRange(1, 1, 1, KOPF_PREISE.length).setValues([KOPF_PREISE]).setFontWeight('bold');
     sh.setFrozenRows(1);
-    sh.getRange(2, 4, START_PREISE.length, 1).setNumberFormat('@');
-    sh.getRange(2, 1, START_PREISE.length, 4).setValues(START_PREISE.map(r => r.concat('2000-01-01')));
   }
+  // fehlende Einträge (z. B. Referenzleistung bei älterem Blatt) ergänzen
+  const n = sh.getLastRow() - 1;
+  const da = n > 0 ? sh.getRange(2, 1, n, 1).getValues().map(r => String(r[0]).trim().toLowerCase()) : [];
+  START_PREISE.filter(p => da.indexOf(p[0]) < 0).forEach(p => {
+    const z = sh.getLastRow() + 1;
+    sh.getRange(z, 4).setNumberFormat('@');
+    sh.getRange(z, 1, 1, 4).setValues([p.concat('2000-01-01')]);
+  });
   return sh;
+}
+
+// Wert aus "Preise", der am Tag datum (yyyy-MM-dd) galt
+function wertAm(medium, datum) {
+  const sh = preiseBlatt();
+  const n = sh.getLastRow() - 1;
+  if (n < 1) return NaN;
+  let best = null;
+  sh.getRange(2, 1, n, 4).getValues().forEach(r => {
+    const ab = r[3] instanceof Date ? Utilities.formatDate(r[3], TZ, 'yyyy-MM-dd') : String(r[3]);
+    if (String(r[0]).trim().toLowerCase() === medium && ab <= datum && (!best || ab >= best.ab))
+      best = { ab, wert: parseFloat(String(r[1]).replace(',', '.')) };
+  });
+  return best ? best.wert : NaN;
+}
+
+// kWh über Referenz für eine Viertelstunde (0, wenn Abstand kein 15-Min.-Schritt ist)
+function ueberReferenz(tA, kwhA, tB, kwhB, refKw) {
+  const min = (tB - tA) / 60000;
+  if (min < 14 || min > 16 || kwhA === '' || kwhB === '' || isNaN(refKw)) return 0;
+  return Math.max(0, (Number(kwhB) - Number(kwhA)) - refKw * 0.25);
+}
+
+// Einmal manuell ausführen: rechnet "Strom über Referenz" für alle Tage aus dem Blatt "Aktuell" neu
+function referenzNachrechnen() {
+  const ss = SpreadsheetApp.getActive();
+  const akt = ss.getSheetByName('Aktuell'), tage = ss.getSheetByName('Tage');
+  tage.getRange(1, 6).setValue(KOPF_TAGE[5]).setFontWeight('bold');
+  const n = akt.getLastRow() - 1;
+  if (n < 2) return;
+  const w = akt.getRange(2, 1, n, 2).getValues();
+  const proTag = {};
+  for (let i = 1; i < w.length; i++) {
+    if (!(w[i][0] instanceof Date) || !(w[i - 1][0] instanceof Date)) continue;
+    const datum = Utilities.formatDate(new Date(w[i][0].getTime() - 1000), TZ, 'yyyy-MM-dd');
+    const ue = ueberReferenz(w[i - 1][0], w[i - 1][1], w[i][0], w[i][1], wertAm('referenz', datum));
+    proTag[datum] = (proTag[datum] || 0) + ue;
+  }
+  const nT = tage.getLastRow() - 1;
+  if (nT < 1) return;
+  const daten = tage.getRange(2, 1, nT, 1).getDisplayValues();
+  tage.getRange(2, 6, nT, 1).setValues(daten.map(r => [proTag[r[0]] !== undefined ? +proTag[r[0]].toFixed(3) : '']));
+  console.log('Fertig: ' + Object.keys(proTag).length + ' Tage berechnet');
 }
 
 // Neuen Preis speichern (aus der WebApp). Gleiches Medium am selben Tag: Zeile überschreiben.
@@ -79,7 +130,17 @@ function doPost(e) {
     // Außentemperatur stündlich (nur zur vollen Stunde)
     const temp = Utilities.formatDate(jetzt, TZ, 'mm') === '00' ? aussenTemperatur() : '';
 
-    ss.getSheetByName('Aktuell').appendRow([
+    // kWh über Referenzleistung in dieser Viertelstunde (Vergleich mit der vorigen Messung)
+    const akt = ss.getSheetByName('Aktuell');
+    const datum = Utilities.formatDate(new Date(jetzt.getTime() - 1000), TZ, 'yyyy-MM-dd');
+    let ueber = 0;
+    if (akt.getLastRow() > 1) {
+      const vor = akt.getRange(akt.getLastRow(), 1, 1, 2).getValues()[0];
+      if (vor[0] instanceof Date)
+        ueber = ueberReferenz(vor[0], vor[1], jetzt, zahl(d.strom_import_kwh), wertAm('referenz', datum));
+    }
+
+    akt.appendRow([
       jetzt, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.leistung_w),
       zahl(d.l1_w), zahl(d.l2_w), zahl(d.l3_w), zahl(d.gas_m3), zahl(d.wasser_m3),
       zahl(d.l1_v), zahl(d.l2_v), zahl(d.l3_v), zahl(d.l1_a), zahl(d.l2_a), zahl(d.l3_a),
@@ -91,13 +152,16 @@ function doPost(e) {
     // Tagesblatt: eine Zeile pro Tag mit dem Endstand. Der Stand um 00:00 ist der Endstand des Vortags
     // (Tagesverbrauch = 00:00 bis 00:00, wie Leneda), deshalb 1 Sekunde zurückrechnen.
     const tage = ss.getSheetByName('Tage');
-    const datum = Utilities.formatDate(new Date(jetzt.getTime() - 1000), TZ, 'yyyy-MM-dd');
+    if (tage.getRange(1, 6).getValue() === '') tage.getRange(1, 6).setValue(KOPF_TAGE[5]).setFontWeight('bold');
     const zeile = [datum, zahl(d.strom_import_kwh), zahl(d.strom_export_kwh), zahl(d.gas_m3), zahl(d.wasser_m3)];
     const letzte = tage.getLastRow();
     const letztesDatum = letzte > 1 ? String(tage.getRange(letzte, 1).getDisplayValue()) : '';
     if (letztesDatum === datum) {
+      const bisher = Number(tage.getRange(letzte, 6).getValue()) || 0;
+      zeile.push(+(bisher + ueber).toFixed(3));
       tage.getRange(letzte, 1, 1, zeile.length).setValues([zeile]);
     } else {
+      zeile.push(+ueber.toFixed(3));
       tage.appendRow(zeile);
       tage.getRange(tage.getLastRow(), 1).setNumberFormat('@');  // Datum als Text speichern
       tage.getRange(tage.getLastRow(), 1).setValue(datum);
@@ -121,7 +185,7 @@ function doGet() {
   // bis zu 400 Tage
   const nT = Math.max(0, tage.getLastRow() - 1);
   const anzT = Math.min(nT, 400);
-  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 5).getDisplayValues() : [];
+  const tageWerte = anzT ? tage.getRange(tage.getLastRow() - anzT + 1, 1, anzT, 6).getDisplayValues() : [];
 
   const pr = preiseBlatt();
   const nP = Math.max(0, pr.getLastRow() - 1);
@@ -147,7 +211,8 @@ function doGet() {
       import: parseFloat(String(r[1]).replace(',', '.')),
       export: parseFloat(String(r[2]).replace(',', '.')),
       gas: parseFloat(String(r[3]).replace(',', '.')),
-      wasser: parseFloat(String(r[4]).replace(',', '.'))
+      wasser: parseFloat(String(r[4]).replace(',', '.')),
+      ueber: parseFloat(String(r[5]).replace(',', '.'))
     }))
   });
 }
