@@ -734,7 +734,7 @@ function eigenAuswahlBauen() {
       (gewaehlt.includes(w.id) ? ' checked' : '') + '>' + w.name + '</label>').join('') + '</fieldset>').join('');
   const heute = new Date();
   $('eBis').value = iso(heute);
-  $('eVon').value = iso(new Date(heute.getTime() - 864e5));
+  $('eVon').value = iso(new Date(heute.getTime() - 6 * 864e5));   // Vorgabe: letzte 7 Tage inkl. heute
 }
 
 async function eigenZeigen() {
