@@ -168,7 +168,6 @@ function doPost(e) {
   if (d.key !== WRITE_KEY) return antwort({ ok: false, fehler: 'key' });
   if (d.aktion === 'preis') return preisSpeichern(d);
   if (d.aktion === 'historie') return historieSpeichern(d);
-  if (d.aktion === 'leneda') return lenedaSpeichern(d);
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -398,13 +397,52 @@ function testTemperatur() {
   console.log('Außentemperatur Diekirch: ' + aussenTemperatur() + ' °C');
 }
 
-// ==================== Leneda-Daten ====================
-// Leneda sperrt Abrufe von Google-Servern. Deshalb holt das PowerShell-Skript leneda_abruf.ps1 die Daten
-// zu Hause und schickt sie hierher (doPost, aktion 'leneda').
-// d.strom / d.gas = { items:[{startedAt, value}], unit, intervall }, d.geteilt = Liste solcher Reihen.
+// ==================== Leneda-API ====================
+// Zugangsdaten stehen NICHT im Code, sondern unter Projekteinstellungen > Skripteigenschaften:
+//   LENEDA_API_KEY, LENEDA_ENERGY_ID, LENEDA_POD_STROM, LENEDA_POD_GAS (Gas optional)
+// Abruf: 15-Min.-Werte Strom (kW), geteilter Strom (Energiegemeinschaft, alle Ebenen), Gas (m³).
 // Ergebnis: Tageswerte im Blatt "Historie" (Strom, kWh über Referenz, Gas, geteilt) und
 // Viertelstundenwerte Strom im Blatt "Leneda 15 min" (zum Nachprüfen der Rechnung).
+const LENEDA_URL = 'https://api.leneda.lu/api';
+const OBIS_STROM = '1-1:1.29.0';
+const OBIS_GETEILT = ['1-65:1.29.1', '1-65:1.29.3', '1-65:1.29.2', '1-65:1.29.4'];
+const OBIS_GAS = '7-1:99.23.15';
+const LENEDA_START = '2023-01-01';   // ältester Tag für lenedaNachholen()
 const KOPF_L15 = ['Beginn (Ortszeit)', 'Leistung (kW)', 'Energie (kWh)', 'Referenz (kW)', 'über Referenz (kWh)', 'geteilt (kWh)'];
+
+function lenedaZugang() {
+  const p = PropertiesService.getScriptProperties();
+  const z = { key: p.getProperty('LENEDA_API_KEY'), id: p.getProperty('LENEDA_ENERGY_ID'),
+              strom: p.getProperty('LENEDA_POD_STROM'), gas: p.getProperty('LENEDA_POD_GAS') };
+  if (!z.key || !z.id || !z.strom) throw new Error('Skripteigenschaften LENEDA_API_KEY, LENEDA_ENERGY_ID, LENEDA_POD_STROM fehlen');
+  return z;
+}
+
+// Einmal manuell ausführen: prüft den Zugang mit den gestrigen Stromwerten
+function lenedaTest() {
+  const z = lenedaZugang();
+  const bis = new Date(), von = new Date(bis.getTime() - 2 * 864e5);
+  const r = lenedaReihen(z, z.strom, [OBIS_STROM], von, bis)[OBIS_STROM];
+  console.log(r.fehler ? 'Fehler: ' + r.fehler : 'OK: ' + r.items.length + ' Werte, Einheit ' + r.unit + ', Intervall ' + r.intervall);
+}
+
+// Mehrere OBIS-Codes eines Zählpunkts parallel abrufen. Antwort je Code: { items, unit, intervall, fehler }
+function lenedaReihen(z, pod, codes, von, bis) {
+  const iso = d => Utilities.formatDate(d, 'UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'");
+  const anfragen = codes.map(c => ({
+    url: LENEDA_URL + '/metering-points/' + encodeURIComponent(pod) + '/time-series?obisCode=' + encodeURIComponent(c) +
+         '&startDateTime=' + iso(von) + '&endDateTime=' + iso(bis),
+    headers: { 'X-API-KEY': z.key, 'X-ENERGY-ID': z.id }, muteHttpExceptions: true
+  }));
+  const out = {};
+  UrlFetchApp.fetchAll(anfragen).forEach((r, i) => {
+    const code = r.getResponseCode();
+    if (code !== 200) { out[codes[i]] = { items: [], fehler: 'HTTP ' + code + ' ' + r.getContentText().slice(0, 200) }; return; }
+    const j = JSON.parse(r.getContentText());
+    out[codes[i]] = { items: j.items || [], unit: j.unit || '', intervall: j.intervalLength || '' };
+  });
+  return out;
+}
 
 // Stunden je Intervall aus "PT15M" / "PT1H" (Standard 15 Min.)
 function intervallStunden(s) {
@@ -414,45 +452,45 @@ function intervallStunden(s) {
 // Menge eines Intervalls: Leistung (kW) × Stunden, sonst Wert unverändert (kWh, m³)
 const lenedaMenge = (v, unit, h) => /^kW$/i.test(unit) ? Number(v) * h : Number(v);
 
-function lenedaSpeichern(d) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(30000);
-  try {
-    const tage = {}, viertel = {}, refCache = {};
-    const tag = x => tage[x] || (tage[x] = {});
-    const ref = x => refCache[x] !== undefined ? refCache[x] : (refCache[x] = wertAm('referenz', x));
-    const st = d.strom || { items: [] }, hS = intervallStunden(st.intervall);
-    st.items.forEach(it => {
-      const t = new Date(it.startedAt), dt = Utilities.formatDate(t, TZ, 'yyyy-MM-dd');
-      const kwh = lenedaMenge(it.value, st.unit, hS), r = ref(dt);
-      const ue = isNaN(r) ? 0 : Math.max(0, kwh - r * hS);
-      const o = tag(dt);
-      o.strom = (o.strom || 0) + kwh;
-      o.ueber = (o.ueber || 0) + ue;
-      viertel[t.getTime()] = { t, kw: Number(it.value), kwh, ref: r, ue, gt: 0 };
+// Zeitraum [von, bis) abrufen und schreiben. Gibt die Anzahl Tage zurück.
+function lenedaZeitraum(z, von, bis) {
+  const s = lenedaReihen(z, z.strom, [OBIS_STROM].concat(OBIS_GETEILT), von, bis);
+  if (s[OBIS_STROM].fehler) throw new Error('Strom: ' + s[OBIS_STROM].fehler);
+  const g = z.gas ? lenedaReihen(z, z.gas, [OBIS_GAS], von, bis)[OBIS_GAS] : null;
+
+  const tage = {}, viertel = {}, refCache = {};
+  const tag = d => tage[d] || (tage[d] = {});
+  const ref = d => refCache[d] !== undefined ? refCache[d] : (refCache[d] = wertAm('referenz', d));
+  const st = s[OBIS_STROM], hS = intervallStunden(st.intervall);
+  st.items.forEach(it => {
+    const t = new Date(it.startedAt), d = Utilities.formatDate(t, TZ, 'yyyy-MM-dd');
+    const kwh = lenedaMenge(it.value, st.unit, hS), r = ref(d);
+    const ue = isNaN(r) ? 0 : Math.max(0, kwh - r * hS);
+    const o = tag(d);
+    o.strom = (o.strom || 0) + kwh;
+    o.ueber = (o.ueber || 0) + ue;
+    viertel[t.getTime()] = { t, kw: Number(it.value), kwh, ref: r, ue, gt: 0 };
+  });
+  OBIS_GETEILT.forEach(c => {
+    const x = s[c], h = intervallStunden(x.intervall);
+    x.items.forEach(it => {
+      const t = new Date(it.startedAt), d = Utilities.formatDate(t, TZ, 'yyyy-MM-dd');
+      const m = lenedaMenge(it.value, x.unit, h);
+      tag(d).geteilt = (tag(d).geteilt || 0) + m;
+      if (viertel[t.getTime()]) viertel[t.getTime()].gt += m;
     });
-    (d.geteilt || []).forEach(x => {
-      const h = intervallStunden(x.intervall);
-      (x.items || []).forEach(it => {
-        const t = new Date(it.startedAt), dt = Utilities.formatDate(t, TZ, 'yyyy-MM-dd');
-        const m = lenedaMenge(it.value, x.unit, h);
-        tag(dt).geteilt = (tag(dt).geteilt || 0) + m;
-        if (viertel[t.getTime()]) viertel[t.getTime()].gt += m;
-      });
+  });
+  if (g && !g.fehler) {
+    const h = intervallStunden(g.intervall);
+    g.items.forEach(it => {
+      const d = Utilities.formatDate(new Date(it.startedAt), TZ, 'yyyy-MM-dd');
+      tag(d).gas = (tag(d).gas || 0) + lenedaMenge(it.value, g.unit, h);
     });
-    if (d.gas && d.gas.items) {
-      const h = intervallStunden(d.gas.intervall);
-      d.gas.items.forEach(it => {
-        const dt = Utilities.formatDate(new Date(it.startedAt), TZ, 'yyyy-MM-dd');
-        tag(dt).gas = (tag(dt).gas || 0) + lenedaMenge(it.value, d.gas.unit, h);
-      });
-    }
-    historieMerge(tage);
-    viertelSchreiben(viertel);
-    return antwort({ ok: true, tage: Object.keys(tage).length, viertel: Object.keys(viertel).length });
-  } finally {
-    lock.releaseLock();
-  }
+  } else if (g && g.fehler) console.log('Gas: ' + g.fehler);
+
+  historieMerge(tage);
+  viertelSchreiben(viertel);
+  return Object.keys(tage).length;
 }
 
 // Tageswerte in "Historie" eintragen; nur gelieferte Felder werden überschrieben
@@ -505,6 +543,45 @@ function viertelSchreiben(viertel) {
   sh.getRange(lo + 2, 1, zeilen.length, 1).setNumberFormat('dd.MM.yyyy HH:mm');
 }
 
+const tagStart = d => Utilities.parseDate(d, TZ, 'yyyy-MM-dd');
+const plusTage = (d, n) => Utilities.formatDate(new Date(tagStart(d).getTime() + n * 864e5 + 12 * 3600e3), TZ, 'yyyy-MM-dd');
+
+// Täglich per Zeitauslöser: die letzten 7 Tage neu holen (Leneda liefert verzögert, Werte werden ergänzt)
+function lenedaTaeglich() {
+  const heute = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  lenedaZeitraum(lenedaZugang(), tagStart(plusTage(heute, -7)), tagStart(heute));
+}
+
+// Einmal manuell ausführen: richtet den täglichen Abruf (ca. 6 Uhr) ein
+function lenedaAusloeserEinrichten() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'lenedaTaeglich').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('lenedaTaeglich').timeBased().everyDays(1).atHour(6).inTimezone(TZ).create();
+  console.log('Täglicher Leneda-Abruf eingerichtet');
+}
+
+// Einmal manuell ausführen: holt alles ab LENEDA_START wochenweise nach.
+// Läuft in Etappen (Apps-Script-Zeitlimit) und setzt sich selbst per Auslöser fort, bis heute erreicht ist.
+function lenedaNachholen() {
+  const p = PropertiesService.getScriptProperties();
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'lenedaNachholen').forEach(t => ScriptApp.deleteTrigger(t));
+  const z = lenedaZugang(), beginn = Date.now();
+  const heute = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  let d = p.getProperty('lenedaNachholenAb') || LENEDA_START;
+  while (d < heute && Date.now() - beginn < 4.5 * 60e3) {
+    const bis = plusTage(d, 7) < heute ? plusTage(d, 7) : heute;
+    const n = lenedaZeitraum(z, tagStart(d), tagStart(bis));
+    console.log(d + ' bis ' + bis + ': ' + n + ' Tage');
+    d = bis;
+    p.setProperty('lenedaNachholenAb', d);
+  }
+  if (d < heute) {
+    ScriptApp.newTrigger('lenedaNachholen').timeBased().after(60e3).create();
+    console.log('Fortsetzung in 1 Minute ab ' + d);
+  } else {
+    p.deleteProperty('lenedaNachholenAb');
+    console.log('Nachholen fertig');
+  }
+}
 
 function antwort(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
