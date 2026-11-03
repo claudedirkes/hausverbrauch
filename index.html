@@ -37,7 +37,7 @@
   .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
   .kpi .eur { font-size:15px; font-weight:600; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums; }
   .preise { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
-  @media (min-width:640px) { .preise { grid-template-columns:repeat(4,1fr); } }
+  @media (min-width:640px) { .preise { grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); } }
   .ref { display:flex; flex-wrap:wrap; gap:6px 18px; }
   .ref b { font-variant-numeric:tabular-nums; }
   .preise label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
@@ -95,6 +95,10 @@
       <span>Heute: <b id="ueHeute">–</b></span><span>Gestern: <b id="ueGestern">–</b></span>
       <span>Dieser Monat: <b id="ueMonat">–</b></span><span>Dieses Jahr: <b id="ueJahr">–</b></span>
     </div>
+    <div class="titel" id="gtTitel" style="margin-top:12px;display:none">Mit mir geteilt (Leneda)</div>
+    <div class="muted ref" id="gtZeile" style="margin-top:6px;display:none">
+      <span>Letzter Monat: <b id="gtVormonat">–</b></span><span>Dieses Jahr: <b id="gtJahr">–</b></span><span>Gesamt: <b id="gtGesamt">–</b></span>
+    </div>
   </div>
 
   <div class="charts">
@@ -112,6 +116,7 @@
 
     <div class="card">
       <div class="titel" id="tTage">Tagesverbrauch</div>
+      <div class="muted gtLeg" style="display:none">grün = mit mir geteilt, farbig = vom Lieferanten</div>
       <div class="chart"><canvas id="cTage"></canvas><div class="leer">Noch kein vollständiger Tag.</div></div>
     </div>
     <div class="card">
@@ -121,6 +126,7 @@
     </div>
     <div class="card breit">
       <div class="titel" id="tJahre">Jahresverbrauch</div>
+      <div class="muted gtLeg" style="display:none">grün = mit mir geteilt, farbig = vom Lieferanten</div>
       <div class="chart"><canvas id="cJahre"></canvas><div class="leer">Noch keine Jahreswerte.</div></div>
     </div>
   </div>
@@ -132,6 +138,7 @@
       <label>⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
       <label>🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
       <label>💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
+      <label>🤝 Strom geteilt (€/kWh)<input id="pGeteilt" type="text" inputmode="decimal" placeholder="fehlt"></label>
       <label>📏 Referenzleistung (kW)<input id="pReferenz" type="text" inputmode="decimal"></label>
     </div>
     <div class="preisZeile">
@@ -196,9 +203,17 @@ function preis(med, tag) {
   const p = (daten.preise || []).filter(x => x.medium === med && x.ab <= tag).sort((a, b) => a.ab < b.ab ? -1 : 1);
   return p.length ? p[p.length - 1].preis : NaN;
 }
+// Geteilter Strom je Tag (nur aus Leneda-Import) und Kosten eines Tages: geteilt × Preis geteilt + Rest × Strompreis.
+// Fehlt der Preis für geteilten Strom, wird mit dem normalen Strompreis gerechnet.
+let GT = {};
+const preisGeteilt = d => { const p = preis('geteilt', d); return leer(p) ? preis('strom', d) : p; };
+function kostenTag(med, d, v) {
+  if (med === 'strom' && !leer(GT[d])) return (v - GT[d]) * preis('strom', d) + GT[d] * preisGeteilt(d);
+  return v * preis(med, d);
+}
 const eur = v => leer(v) ? '' : Number(v).toLocaleString('de-DE', { style:'currency', currency:'EUR' });
 // Kosten mehrerer Tage, jeder Tag mit seinem Preis
-const kostenTage = (eintraege, med) => eintraege.reduce((s, [d, v]) => s + v * preis(med, d), 0);
+const kostenTage = (eintraege, med) => eintraege.reduce((s, [d, v]) => s + kostenTag(med, d, v), 0);
 
 // Tagesverbrauch = Endstand Tag minus Endstand Vortag
 // Tage ohne eigene Messung werden aus der Historie (Leneda-Import) ergänzt
@@ -230,9 +245,10 @@ function chart(id, typ, labels, werte, farbe, tipp, extra = {}) {
   box.classList.toggle('ohneDaten', !hatWerte);
   if (!hatWerte) return;
   const wenige = werte.filter(v => !leer(v)).length < 20;
-  const datasets = [{ data: werte, backgroundColor: farbe, borderColor: farbe, borderRadius: 3, maxBarThickness: 40,
-                      pointRadius: wenige ? 3 : 0, pointHoverRadius: 5, tension: .3, fill: false, yAxisID: 'y' }]
-                   .concat(extra.datasets || []);
+  const haupt = { data: werte, backgroundColor: farbe, borderColor: farbe, borderRadius: 3, maxBarThickness: 40, haupt: true,
+                  pointRadius: wenige ? 3 : 0, pointHoverRadius: 5, tension: .3, fill: false, yAxisID: 'y' };
+  if (extra.stack) haupt.stack = extra.stack;
+  const datasets = (extra.vorher || []).concat([haupt], extra.datasets || []);
   charts[id] = new Chart($(id), {
     type: typ,
     data: { labels, datasets },
@@ -243,11 +259,12 @@ function chart(id, typ, labels, werte, farbe, tipp, extra = {}) {
       plugins: {
         legend: { display: false },
         tooltip: { displayColors: false, padding: 10, titleFont: { size: 13 }, bodyFont: { size: 14, weight: 'bold' },
-                   callbacks: { title: () => '', label: c => c.datasetIndex === 0 ? tipp(c.dataIndex, c.raw) : (extra.tipp2 ? extra.tipp2(c.raw, c.dataIndex) : null) } }
+                   filter: c => !c.dataset.ohneTipp,
+                   callbacks: { title: () => '', label: c => c.dataset.haupt ? tipp(c.dataIndex, c.raw) : (extra.tipp2 ? extra.tipp2(c.raw, c.dataIndex) : null) } }
       },
       scales: Object.assign({
-        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
-        y: { beginAtZero: true, grace: '10%', ticks: { maxTicksLimit: 6 } }
+        x: { stacked: !!extra.gestapelt, grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { stacked: !!extra.gestapelt, beginAtZero: true, grace: '10%', ticks: { maxTicksLimit: 6 } }
       }, extra.scales || {})
     }
   });
@@ -288,12 +305,24 @@ function anzeigen() {
   const alterMin = (Date.now() - zeit) / 60000;
   $('warn').textContent = alterMin > 30 ? '⚠ Letzter Wert ist älter als ' + Math.round(alterMin) + ' Minuten – Bridge prüfen.' : '';
 
+  GT = {};
+  (daten.historie || []).forEach(h => { if (!leer(h.geteilt)) GT[h.datum] = Number(h.geteilt); });
+  const mitGT = medium === 'strom' && Object.keys(GT).length > 0;
+  const gruen = '#2fa86b';
+  // gestapelte Darstellung: Werte (Gesamt) → [Rest vom Lieferanten, geteilt]
+  const aufteilen = (werte, gtWerte) => ({
+    rest: werte.map((v, i) => leer(v) || leer(gtWerte[i]) ? v : +(v - gtWerte[i]).toFixed(2)),
+    gt: gtWerte.map(v => leer(v) ? null : +v.toFixed(2))
+  });
+  const gtText = (gesamt, g) => leer(g) ? [] : ['davon geteilt: ' + fmtE(g, 2, 'kWh') + ' (' + fmt(gesamt ? g / gesamt * 100 : 0, 0) + ' %)',
+                                                 'vom Lieferanten: ' + fmtE(gesamt - g, 2, 'kWh')];
+  document.querySelectorAll('.gtLeg').forEach(e => e.style.display = mitGT ? 'block' : 'none');
   const tv = tagesVerbrauch(m.feld);
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
   const tagKpi = (id, d) => {
     const v = tv[iso(d)];
     $(id).textContent = fmtE(leer(v) ? NaN : v * m.faktor, m.dez, m.einheit);
-    $(id + 'E').textContent = leer(v) ? '' : eur(v * preis(medium, iso(d)));
+    $(id + 'E').textContent = leer(v) ? '' : eur(kostenTag(medium, iso(d), v));
   };
   tagKpi('heute', heute);
   tagKpi('gestern', gestern);
@@ -354,10 +383,14 @@ function anzeigen() {
   $('schnittE').textContent = imSchnitt.length ? eur(kostenTage(imSchnitt, medium) / imSchnitt.length) : '';
   $('tTage').textContent = 'Tagesverbrauch' + (tLabels.length >= 30 ? ' – letzte 30 Tage' : '') + ' (' + m.einheit + ')';
   const ueTag = ueberTage();
-  chart('cTage', 'bar', tLabels, tWerte, m.farbe,
-    (i, v) => [tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit),
-               eur(v / m.faktor * preis(medium, iso(tDaten[i])))]
-              .concat(medium === 'strom' && ueTag[iso(tDaten[i])] > 0 ? ['Über Referenz: ' + fmtE(ueTag[iso(tDaten[i])], 2, 'kWh')] : []));
+  const tGT = tDaten.map(d => mitGT && tWerte[tDaten.indexOf(d)] !== null && !leer(GT[iso(d)]) ? GT[iso(d)] : null);
+  const tSplit = aufteilen(tWerte, tGT);
+  chart('cTage', 'bar', tLabels, mitGT ? tSplit.rest : tWerte, m.farbe,
+    i => { const v = tWerte[i]; return [tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit),
+               eur(kostenTag(medium, iso(tDaten[i]), v / m.faktor))]
+              .concat(mitGT ? gtText(v, tGT[i]) : [])
+              .concat(medium === 'strom' && ueTag[iso(tDaten[i])] > 0 ? ['Über Referenz: ' + fmtE(ueTag[iso(tDaten[i])], 2, 'kWh')] : []); },
+    mitGT ? { gestapelt: true, vorher: [{ data: tSplit.gt, backgroundColor: gruen, borderColor: gruen, borderRadius: 3, maxBarThickness: 40, ohneTipp: true }] } : {});
 
   // Monate: höchstens 12, nur ab dem ersten Monat mit Wert
   const mon = {};
@@ -386,9 +419,23 @@ function anzeigen() {
     .reduce((s2, [, v]) => s2 + v, 0);
   $('tMonate').textContent = 'Monatsverbrauch' + (mLabels.length >= 12 ? ' – letzte 12 Monate' : '') + ' (' + m.einheit + ')';
   const monatKosten = {};
-  Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); monatKosten[k] = (monatKosten[k] || 0) + v * preis(medium, d); });
-  chart('cMonate', 'bar', mLabels, mWerte, m.farbe,
-    (i, v) => {
+  const monatGT = {};
+  Object.entries(tv).forEach(([d, v]) => {
+    const k = d.slice(0, 7);
+    monatKosten[k] = (monatKosten[k] || 0) + kostenTag(medium, d, v);
+    if (mitGT && !leer(GT[d])) monatGT[k] = (monatGT[k] || 0) + GT[d];
+  });
+  const mGT = mDaten.map((d, i) => mWerte[i] !== null && monatGT[mKey(d)] !== undefined ? monatGT[mKey(d)] : null);
+  const mSplit = aufteilen(mWerte, mGT);
+  const mExtra = mitVorjahr ? {
+      datasets: [{ type:'bar', data: mVorjahr, backgroundColor:'#9aa5b1', borderColor:'#9aa5b1', borderRadius:3, maxBarThickness:40, yAxisID:'y', stack:'vj' }],
+      tipp2: (v, i) => leer(v) ? null : 'Vorjahr gesamt: ' + fmtE(v, m.dez, m.einheit) + ' · ' + eur(monatKosten[mKey(new Date(mDaten[i].getFullYear() - 1, mDaten[i].getMonth(), 1))])
+    } : {};
+  if (mitGT) Object.assign(mExtra, { gestapelt: true, stack: 'akt',
+    vorher: [{ data: mSplit.gt, backgroundColor: gruen, borderColor: gruen, borderRadius: 3, maxBarThickness: 40, ohneTipp: true, stack: 'akt' }] });
+  chart('cMonate', 'bar', mLabels, mitGT ? mSplit.rest : mWerte, m.farbe,
+    (i) => {
+      const v = mWerte[i];
       const d = mDaten[i], k = mKey(d);
       const out = [d.toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit), eur(monatKosten[k])];
       const vj = k === iso(heute).slice(0, 7) ? vorjahrBisHeute * m.faktor : mVorjahr[i];
@@ -397,26 +444,28 @@ function anzeigen() {
         out.push('Vorjahr' + (k === iso(heute).slice(0, 7) ? ' bis ' + tagHeute + '.' : '') + ': ' + fmtE(vj, m.dez, m.einheit) +
                  ' (' + (pct >= 0 ? '+' : '') + fmt(pct, 0) + ' %)');
       }
-      return out;
+      return out.concat(mitGT ? gtText(v, mGT[i]) : []);
     },
-    mitVorjahr ? {
-      datasets: [{ type:'bar', data: mVorjahr, backgroundColor:'#9aa5b1', borderColor:'#9aa5b1', borderRadius:3, maxBarThickness:40, yAxisID:'y' }],
-      tipp2: (v, i) => leer(v) ? null : 'Vorjahr gesamt: ' + fmtE(v, m.dez, m.einheit) + ' · ' + eur(monatKosten[mKey(new Date(mDaten[i].getFullYear() - 1, mDaten[i].getMonth(), 1))])
-    } : {});
+    mExtra);
 
   // Jahre: Summe pro Kalenderjahr
-  const jahre = {}, jahrKosten = {}, jahrTage = {};
+  const jahre = {}, jahrKosten = {}, jahrTage = {}, jahrGT = {};
   Object.entries(tv).forEach(([d, v]) => {
     const k = d.slice(0, 4);
-    jahre[k] = (jahre[k] || 0) + v; jahrKosten[k] = (jahrKosten[k] || 0) + v * preis(medium, d); jahrTage[k] = (jahrTage[k] || 0) + 1;
+    jahre[k] = (jahre[k] || 0) + v; jahrKosten[k] = (jahrKosten[k] || 0) + kostenTag(medium, d, v); jahrTage[k] = (jahrTage[k] || 0) + 1;
+    if (mitGT && !leer(GT[d])) jahrGT[k] = (jahrGT[k] || 0) + GT[d];
   });
   const jListe = Object.keys(jahre).sort();
   $('tJahre').textContent = 'Jahresverbrauch (' + m.einheit + ')';
-  chart('cJahre', 'bar', jListe, jListe.map(k => +(jahre[k] * m.faktor).toFixed(m.dez)), m.farbe,
-    (i, v) => {
-      const k = jListe[i];
-      return [k + ': ' + fmtE(v, m.dez, m.einheit), eur(jahrKosten[k]), jahrTage[k] + ' Tage mit Daten'];
-    });
+  const jWerte = jListe.map(k => +(jahre[k] * m.faktor).toFixed(m.dez));
+  const jGT = jListe.map(k => jahrGT[k] !== undefined ? jahrGT[k] : null);
+  const jSplit = aufteilen(jWerte, jGT);
+  chart('cJahre', 'bar', jListe, mitGT ? jSplit.rest : jWerte, m.farbe,
+    i => {
+      const k = jListe[i], v = jWerte[i];
+      return [k + ': ' + fmtE(v, m.dez, m.einheit), eur(jahrKosten[k]), jahrTage[k] + ' Tage mit Daten'].concat(mitGT ? gtText(v, jGT[i]) : []);
+    },
+    mitGT ? { gestapelt: true, vorher: [{ data: jSplit.gt, backgroundColor: gruen, borderColor: gruen, borderRadius: 3, maxBarThickness: 40, ohneTipp: true }] } : {});
 
   // Gas-Extras: stündlicher Verbrauch + Außentemperatur
   if (medium === 'gas') {
@@ -454,6 +503,20 @@ function anzeigen() {
     $('ueGestern').textContent = fmtE(ue[iso(gestern)], 2, 'kWh');
     $('ueMonat').textContent = fmtE(ueSumme(iso(heute).slice(0, 7)), 2, 'kWh');
     $('ueJahr').textContent = fmtE(ueSumme(iso(heute).slice(0, 4)), 2, 'kWh');
+    $('gtTitel').style.display = $('gtZeile').style.display = mitGT ? 'block' : 'none';
+    if (mitGT) {
+      $('gtZeile').style.display = 'flex';
+      const gtSumme = prefix => {
+        const e = Object.entries(GT).filter(([d]) => d.startsWith(prefix));
+        if (!e.length) return '–';
+        const g = e.reduce((s2, [, v]) => s2 + v, 0), t = e.reduce((s2, [d]) => s2 + (tv[d] || 0), 0);
+        return fmtE(g, 1, 'kWh') + (t ? ' (' + fmt(g / t * 100, 0) + ' %)' : '');
+      };
+      const vm = new Date(heute.getFullYear(), heute.getMonth() - 1, 1);
+      $('gtVormonat').textContent = gtSumme(mKey(vm));
+      $('gtJahr').textContent = gtSumme(iso(heute).slice(0, 4));
+      $('gtGesamt').textContent = gtSumme('');
+    }
     $('leistung').textContent = fmtE(leer(letzte.leistung) ? NaN : Number(letzte.leistung), 0, 'W') + ' (' + hhmm(zeit) + ')';
     // nur Bezug kostet Geld; bei Einspeisung (negative Leistung) 0 €
     $('leistungE').textContent = leer(letzte.leistung) ? '–' : eur(Math.max(0, Number(letzte.leistung)) / 1000 * preis('strom', iso(zeit))) + '/h';
@@ -462,7 +525,7 @@ function anzeigen() {
   }
 }
 
-const PREISFELDER = [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser'], ['pReferenz', 'referenz']];
+const PREISFELDER = [['pStrom', 'strom'], ['pGas', 'gas'], ['pWasser', 'wasser'], ['pGeteilt', 'geteilt'], ['pReferenz', 'referenz']];
 // Preisfelder mit den heute gültigen Preisen füllen (nicht während der Eingabe)
 function preiseFuellen() {
   const h = iso(new Date());
@@ -506,9 +569,11 @@ function lenedaLesen(text) {
   const einheit = erste[iEinheit];
   let medium;
   if (obis === '1-1:1.29.0') medium = 'strom';
+  else if (/^1-65:1\.29\.[1-4]$/.test(obis)) medium = 'geteilt';   // Verbrauch gedeckt durch Energieteilung (Ebenen 1–4)
+  else if (obis === '1-65:1.29.9' || obis === '1-65:1.29.8') throw new Error('übersprungen – wird nicht gebraucht (Rest = Gesamt − geteilt)');
   else if (obis.startsWith('7-')) medium = 'gas';
-  else throw new Error('OBIS ' + obis + ' wird nicht unterstützt (nur Strom Bezug 1-1:1.29.0 und Gas)');
-  if (medium === 'strom' && einheit !== 'kW' && einheit !== 'kWh') throw new Error('Einheit ' + einheit + ' bei Strom unerwartet');
+  else throw new Error('OBIS ' + obis + ' wird nicht unterstützt');
+  if (medium !== 'gas' && einheit !== 'kW' && einheit !== 'kWh') throw new Error('Einheit ' + einheit + ' bei Strom unerwartet');
   if (medium === 'gas' && !/^N?m3$|^N?m³$/i.test(einheit)) throw new Error('Gas in ' + einheit + ' – bitte Claude Bescheid geben, Umrechnung fehlt noch');
   const werte = [];
   for (let i = 1; i < zeilen.length; i++) {
@@ -517,7 +582,7 @@ function lenedaLesen(text) {
     const wert = Number(String(f[iWert]).replace(',', '.'));
     if (isNaN(start) || isNaN(wert)) continue;
     const min = iInt >= 0 ? Number(f[iInt]) || 15 : 15;
-    werte.push({ ms: start.getTime(), min, menge: (f[iEinheit] === 'kW') ? wert * min / 60 : wert });
+    werte.push({ ms: start.getTime(), min, obis, menge: (f[iEinheit] === 'kW') ? wert * min / 60 : wert });
   }
   return { medium, werte };
 }
@@ -530,19 +595,19 @@ async function lenedaImport() {
   if (!daten) { $('lStatus').textContent = 'Daten noch nicht geladen.'; return; }
   const key = schreibKey();
   if (!key) return;
-  const fehler = [], intervalle = { strom: new Map(), gas: new Map() }, anzDateien = { strom: 0, gas: 0 };
+  const fehler = [], intervalle = { strom: new Map(), geteilt: new Map(), gas: new Map() }, anzDateien = { strom: 0, geteilt: 0, gas: 0 };
   for (let n = 0; n < dateien.length; n++) {
     const f = dateien[n];
     $('lStatus').textContent = 'Lese Datei ' + (n + 1) + '/' + dateien.length + ' …';
     try {
       const { medium, werte } = lenedaLesen(await f.text());
       if (!werte.length) throw new Error('keine Werte gefunden');
-      werte.forEach(w => intervalle[medium].set(w.ms, w));
+      werte.forEach(w => intervalle[medium].set(w.obis + '|' + w.ms, w));
       anzDateien[medium]++;
     } catch (e) { fehler.push('✗ ' + f.name + ': ' + e.message); }
   }
   const log = [];
-  for (const medium of ['strom', 'gas']) {
+  for (const medium of ['strom', 'geteilt', 'gas']) {
     if (!intervalle[medium].size) continue;
     const tage = {};
     intervalle[medium].forEach(w => {
@@ -552,7 +617,7 @@ async function lenedaImport() {
       if (medium === 'strom') { const ref = preis('referenz', tag); if (!leer(ref)) t.ueber += Math.max(0, w.menge - ref * w.min / 60); }
     });
     const liste = Object.keys(tage).sort().map(d => ({ datum: d, wert: +tage[d].wert.toFixed(3), ueber: +tage[d].ueber.toFixed(3) }));
-    const name = medium === 'strom' ? 'Strom' : 'Gas';
+    const name = { strom: 'Strom', geteilt: 'Strom geteilt', gas: 'Gas' }[medium];
     try {
       for (let i = 0; i < liste.length; i += 500) {
         $('lStatus').textContent = log.concat(name + ': sende ' + Math.min(i + 500, liste.length) + '/' + liste.length + ' Tage …').join('\n');
@@ -564,7 +629,7 @@ async function lenedaImport() {
         if (!tage[iso(d)]) luecken.push(iso(d));
       const summe = liste.reduce((s2, t) => s2 + t.wert, 0);
       log.push('✓ ' + name + ': ' + anzDateien[medium] + ' Dateien, ' + liste.length + ' Tage (' + liste[0].datum + ' bis ' +
-               liste[liste.length - 1].datum + '), ' + fmtE(summe, 1, medium === 'strom' ? 'kWh' : 'm³') +
+               liste[liste.length - 1].datum + '), ' + fmtE(summe, 1, medium === 'gas' ? 'm³' : 'kWh') +
                (luecken.length ? '\n   ⚠ ' + luecken.length + ' Tage fehlen: ' + luecken.slice(0, 8).join(', ') + (luecken.length > 8 ? ' …' : '') : ''));
     } catch (e) { log.push('✗ ' + name + ': nicht gespeichert – ' + e.message); }
   }

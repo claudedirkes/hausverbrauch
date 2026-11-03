@@ -17,7 +17,7 @@ const KOPF_TAGE = ['Datum', 'Strom Bezug (kWh)', 'Strom Einspeisung (kWh)', 'Gas
 const KOPF_PREISE = ['Medium', 'Preis (€)', 'Einheit', 'gültig ab'];
 // "referenz" = Referenzleistung in kW (Strom). Verbrauch über Referenz je Viertelstunde = max(0, kWh − kW × 0,25 h)
 const START_PREISE = [['strom', 0.1793, '€/kWh'], ['gas', 0.431, '€/m³'], ['wasser', 10.45, '€/m³'], ['referenz', 3, 'kW']];
-const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³', referenz: 'kW' };
+const EINHEIT = { strom: '€/kWh', gas: '€/m³', wasser: '€/m³', referenz: 'kW', geteilt: '€/kWh' };
 
 // Einmal manuell ausführen: setzt/aktualisiert die Kopfzeilen. Vorhandene Daten bleiben erhalten.
 function einrichten() {
@@ -51,17 +51,18 @@ function preiseBlatt() {
 }
 
 // Historie (Leneda-Import): eine Zeile pro Tag. Eigene P1-Messungen im Blatt "Tage" haben in der WebApp Vorrang.
-const KOPF_HIST = ['Datum', 'Strom Bezug (kWh)', 'Strom über Referenz (kWh)', 'Gas (m³)'];
-const HIST_SPALTE = { strom: 1, gas: 3 };   // Index in KOPF_HIST
+// "Strom geteilt" = Leneda OBIS 1-65:1.29.x (Verbrauch gedeckt durch Energieteilung); Rest vom Lieferanten = Bezug − geteilt
+const KOPF_HIST = ['Datum', 'Strom Bezug (kWh)', 'Strom über Referenz (kWh)', 'Gas (m³)', 'Strom geteilt (kWh)'];
+const HIST_SPALTE = { strom: 1, gas: 3, geteilt: 4 };   // Index in KOPF_HIST
 
 function historieBlatt() {
   const ss = SpreadsheetApp.getActive();
   let sh = ss.getSheetByName('Historie');
   if (!sh) {
     sh = ss.insertSheet('Historie');
-    sh.getRange(1, 1, 1, KOPF_HIST.length).setValues([KOPF_HIST]).setFontWeight('bold');
     sh.setFrozenRows(1);
   }
+  sh.getRange(1, 1, 1, KOPF_HIST.length).setValues([KOPF_HIST]).setFontWeight('bold');   // neue Spalten ergänzen
   return sh;
 }
 
@@ -75,12 +76,13 @@ function historieSpeichern(d) {
   const zeilen = n > 0 ? sh.getRange(2, 1, n, KOPF_HIST.length).getValues() : [];
   const map = {};
   zeilen.forEach(r => {
+    while (r.length < KOPF_HIST.length) r.push('');
     const k = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
     if (k) map[k] = r;
   });
   d.tage.forEach(t => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(t.datum)) return;
-    const r = map[t.datum] || (map[t.datum] = [t.datum, '', '', '']);
+    const r = map[t.datum] || (map[t.datum] = KOPF_HIST.map((_, i) => i ? '' : t.datum));
     r[sp] = Number(t.wert);
     if (d.medium === 'strom') r[2] = Number(t.ueber) || 0;
   });
@@ -240,7 +242,7 @@ function doGet() {
   const zahlOderNull = v => (v === '' || v === null) ? null : Number(v);
   const historie = nH ? hi.getRange(2, 1, nH, KOPF_HIST.length).getValues().map(r => ({
     datum: r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]),
-    strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3])
+    strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3]), geteilt: zahlOderNull(r[4])
   })) : [];
 
   return antwort({
