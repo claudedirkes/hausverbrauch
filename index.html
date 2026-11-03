@@ -12,35 +12,43 @@
 <link rel="manifest" href="manifest.json">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-  :root { --bg:#f3f6f9; --card:#fff; --text:#1d2733; --muted:#6b7785; --accent:#1f6fd1; --warn:#c0392b; --grid:#e3e8ee; }
+  :root { --bg:#f3f6f9; --card:#fff; --text:#1d2733; --muted:#6b7785; --accent:#1f6fd1; --warn:#c0392b; --grid:#e3e8ee;
+          --m:#e6a700; --mText:#1d2733; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#10161d; --card:#1a222c; --text:#e6edf3; --muted:#8b97a5; --accent:#4a90e2; --warn:#ff6b5b; --grid:#2a3440; }
   }
   * { box-sizing:border-box; }
   body { margin:0; padding:16px; background:var(--bg); color:var(--text); font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
-  .wrap { max-width:900px; margin:0 auto; }
-  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .wrap { max-width:1200px; margin:0 auto; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px; }
   h1 { font-size:20px; margin:0; }
   button { background:none; border:1px solid var(--grid); color:var(--muted); border-radius:8px; padding:6px 10px; font-size:14px; cursor:pointer; }
   .tabs { display:flex; gap:8px; margin-bottom:12px; }
-  .tabs button { flex:1; padding:10px; font-size:15px; font-weight:600; }
-  .tabs button.aktiv { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .tabs button { flex:1; padding:10px; font-size:15px; font-weight:600; transition:background .2s; }
+  .tabs button.aktiv { background:var(--m); color:var(--mText); border-color:var(--m); }
   .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
   .stand { font-size:36px; font-weight:700; font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); font-size:14px; }
+  .titel { color:var(--muted); font-size:14px; font-weight:600; }
   .warn { color:var(--warn); font-weight:600; font-size:14px; margin-top:6px; }
   .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
   @media (min-width:640px) { .grid { grid-template-columns:repeat(4,1fr); } }
   .kpi { margin-bottom:0; }
   .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .charts { display:grid; grid-template-columns:1fr; gap:12px; }
+  .charts .card { margin-bottom:0; }
+  @media (min-width:1000px) { .charts { grid-template-columns:1fr 1fr; } .breit { grid-column:1 / -1; } }
   .chart { position:relative; height:240px; margin-top:8px; }
-  .nurStrom { display:none; }
-  body.strom .nurStrom { display:block; }
-  .nurGas { display:none; }
-  body.gas .nurGas { display:block; }
+  .leer { position:absolute; inset:0; display:none; align-items:center; justify-content:center; text-align:center;
+          color:var(--muted); font-size:14px; padding:0 16px; }
+  .chart.ohneDaten canvas { visibility:hidden; }
+  .chart.ohneDaten .leer { display:flex; }
+  .nurStrom, .nurGas { display:none; }
+  body.strom .nurStrom, body.gas .nurGas { display:block; }
+  body.strom span.nurStrom { display:inline; }
 </style>
 </head>
-<body>
+<body class="strom">
 <div class="wrap">
   <header>
     <h1>🏠 Hausverbrauch</h1>
@@ -70,19 +78,28 @@
     <div class="card kpi"><div class="muted">Ø pro Tag (30 T.)</div><div class="wert" id="schnitt">–</div></div>
   </div>
 
-  <div class="card nurStrom">
-    <div class="muted">Aktuelle Leistung: <b id="leistung">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
-    <div class="chart"><canvas id="cLeistung"></canvas></div>
-  </div>
+  <div class="charts">
+    <div class="card breit">
+      <div class="titel" id="tViertel">Verbrauch pro Viertelstunde – letzte 24 h</div>
+      <div class="muted nurStrom">Leistung zuletzt: <b id="leistung">–</b> · Einspeisung heute: <b id="einspeisung">–</b></div>
+      <div class="chart"><canvas id="cViertel"></canvas><div class="leer">Noch keine Viertelstundenwerte – das Diagramm füllt sich ab der nächsten Messung.</div></div>
+    </div>
 
-  <div class="card nurGas">
-    <div class="muted">Außentemperatur Diekirch: <b id="temp">–</b></div>
-    <div class="muted">Gasverbrauch pro Stunde (m³) und Außentemperatur – letzte 24 h</div>
-    <div class="chart"><canvas id="cGasStunde"></canvas></div>
-  </div>
+    <div class="card breit nurGas">
+      <div class="titel">Gasverbrauch pro Stunde und Außentemperatur – letzte 24 h</div>
+      <div class="muted">Außentemperatur Diekirch: <b id="temp">–</b></div>
+      <div class="chart"><canvas id="cGasStunde"></canvas><div class="leer">Noch keine vollen Stunden – das Diagramm füllt sich ab der nächsten Stunde.</div></div>
+    </div>
 
-  <div class="card"><div class="muted" id="tTage">Tagesverbrauch – letzte 30 Tage</div><div class="chart"><canvas id="cTage"></canvas></div></div>
-  <div class="card"><div class="muted" id="tMonate">Monatsverbrauch – letzte 12 Monate</div><div class="chart"><canvas id="cMonate"></canvas></div></div>
+    <div class="card">
+      <div class="titel" id="tTage">Tagesverbrauch</div>
+      <div class="chart"><canvas id="cTage"></canvas><div class="leer">Noch kein vollständiger Tag.</div></div>
+    </div>
+    <div class="card">
+      <div class="titel" id="tMonate">Monatsverbrauch</div>
+      <div class="chart"><canvas id="cMonate"></canvas><div class="leer">Noch keine Monatswerte.</div></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -90,15 +107,39 @@
 const API = 'https://script.google.com/macros/s/AKfycbzhpkMh_SM98CTPeatrLI6F0BhOWDux-SCZd08H_gWgY2oU3HsEe4npLG2Z9fj25vQz/exec';
 
 const MEDIEN = {
-  strom:  { feld:'import', einheit:'kWh', faktor:1,    dez:2, standEinheit:'kWh', standDez:3, farbe:'#e6a700' },
-  gas:    { feld:'gas',    einheit:'m³',  faktor:1,    dez:2, standEinheit:'m³',  standDez:3, farbe:'#d9534f' },
-  wasser: { feld:'wasser', einheit:'L',   faktor:1000, dez:0, standEinheit:'m³',  standDez:3, farbe:'#1f6fd1' }
+  strom:  { feld:'import', einheit:'kWh', faktor:1,    dez:2, viertelDez:3, standEinheit:'kWh', standDez:3, farbe:'#e6a700', text:'#1d2733' },
+  gas:    { feld:'gas',    einheit:'m³',  faktor:1,    dez:2, viertelDez:3, standEinheit:'m³',  standDez:3, farbe:'#d9534f', text:'#fff' },
+  wasser: { feld:'wasser', einheit:'L',   faktor:1000, dez:0, viertelDez:0, standEinheit:'m³',  standDez:3, farbe:'#1f6fd1', text:'#fff' }
 };
 let daten = null, medium = 'strom', charts = {};
 
 const $ = id => document.getElementById(id);
-const fmt = (v, d) => (v === null || v === undefined || isNaN(v)) ? '–' : v.toLocaleString('de-DE', { minimumFractionDigits:d, maximumFractionDigits:d });
+const leer = v => v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v));
+const fmt = (v, d) => leer(v) ? '–' : Number(v).toLocaleString('de-DE', { minimumFractionDigits:d, maximumFractionDigits:d });
+const fmtE = (v, d, e) => leer(v) ? '–' : fmt(v, d) + ' ' + e;   // ohne Wert nur "–", ohne Einheit
 const iso = d => d.toLocaleDateString('sv-SE'); // yyyy-mm-dd in lokaler Zeit
+const hhmm = d => d.toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' });
+
+// Farben für Diagramme aus dem Farbschema übernehmen (hell/dunkel)
+const css = getComputedStyle(document.documentElement);
+Chart.defaults.color = css.getPropertyValue('--muted').trim();
+Chart.defaults.borderColor = css.getPropertyValue('--grid').trim();
+Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+
+// Werte beim Berühren anzeigen, nach 2 Sekunden wieder ausblenden
+Chart.register({
+  id: 'tooltipAutoHide',
+  afterEvent(chart, args) {
+    const t = args.event.type;
+    if (!['touchstart', 'touchmove', 'mousemove', 'click'].includes(t)) return;
+    clearTimeout(chart.$hideTimer);
+    chart.$hideTimer = setTimeout(() => {
+      chart.setActiveElements([]);
+      chart.tooltip.setActiveElements([], { x:0, y:0 });
+      chart.update('none');
+    }, 2000);
+  }
+});
 
 // Tagesverbrauch = Endstand Tag minus Endstand Vortag
 function tagesVerbrauch(feld) {
@@ -110,13 +151,50 @@ function tagesVerbrauch(feld) {
   return out;
 }
 
-function chart(id, typ, labels, werte, farbe, label) {
-  if (charts[id]) charts[id].destroy();
+// Diagramm zeichnen. Ohne Werte: Hinweistext statt leerer Achsen.
+// tipp(i, wert) liefert den Text, der beim Berühren erscheint.
+function chart(id, typ, labels, werte, farbe, tipp, extra = {}) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+  const box = $(id).parentElement;
+  const hatWerte = werte.some(v => !leer(v));
+  box.classList.toggle('ohneDaten', !hatWerte);
+  if (!hatWerte) return;
+  const wenige = werte.filter(v => !leer(v)).length < 20;
+  const datasets = [{ data: werte, backgroundColor: farbe, borderColor: farbe, borderRadius: 3,
+                      pointRadius: wenige ? 3 : 0, pointHoverRadius: 5, tension: .3, fill: false, yAxisID: 'y' }]
+                   .concat(extra.datasets || []);
   charts[id] = new Chart($(id), {
     type: typ,
-    data: { labels, datasets: [{ label, data: werte, backgroundColor: farbe, borderColor: farbe, pointRadius: 0, tension: .3, fill: false }] },
-    options: { maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+    data: { labels, datasets },
+    options: {
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      events: ['mousemove', 'mouseout', 'click', 'touchstart', 'touchmove'],
+      plugins: {
+        legend: { display: false },
+        tooltip: { displayColors: false, padding: 10, titleFont: { size: 13 }, bodyFont: { size: 14, weight: 'bold' },
+                   callbacks: { title: () => '', label: c => c.datasetIndex === 0 ? tipp(c.dataIndex, c.raw) : (extra.tipp2 ? extra.tipp2(c.raw) : null) } }
+      },
+      scales: Object.assign({
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+        y: { beginAtZero: true, grace: '10%', ticks: { maxTicksLimit: 6 } }
+      }, extra.scales || {})
+    }
   });
+}
+
+// Verbrauch je Viertelstunde aus aufeinanderfolgenden Zählerständen (nur echte 15-Min.-Abstände)
+function viertelstunden(feld) {
+  const ms = daten.messungen, out = [];
+  for (let i = 1; i < ms.length; i++) {
+    const a = ms[i - 1], b = ms[i];
+    if (leer(a[feld]) || leer(b[feld])) continue;
+    const ta = new Date(a.zeit), tb = new Date(b.zeit);
+    const min = (tb - ta) / 60000;
+    if (min < 14 || min > 16) continue;
+    out.push({ start: ta, ende: tb, wert: Number(b[feld]) - Number(a[feld]) });
+  }
+  return out;
 }
 
 function anzeigen() {
@@ -124,90 +202,111 @@ function anzeigen() {
   const m = MEDIEN[medium];
   document.body.classList.toggle('strom', medium === 'strom');
   document.body.classList.toggle('gas', medium === 'gas');
+  document.documentElement.style.setProperty('--m', m.farbe);
+  document.documentElement.style.setProperty('--mText', m.text);
+  document.querySelector('meta[name="theme-color"]').content = m.farbe;
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('aktiv', b.dataset.m === medium));
 
   const letzte = daten.messungen[daten.messungen.length - 1];
   if (!letzte) { $('zeit').textContent = 'Noch keine Daten im Sheet.'; return; }
 
   const zeit = new Date(letzte.zeit);
-  // letzte Messung mit Wert suchen (ältere Zeilen haben Gas/Wasser nur stündlich)
-  const mitWert = [...daten.messungen].reverse().find(x => x[m.feld] !== '' && x[m.feld] !== null && x[m.feld] !== undefined);
+  const mitWert = [...daten.messungen].reverse().find(x => !leer(x[m.feld]));
   const abl = mitWert && (medium === 'gas' ? mitWert.gasZeit : medium === 'wasser' ? mitWert.wasserZeit : null);
-  $('stand').textContent = mitWert ? fmt(Number(mitWert[m.feld]), m.standDez) + ' ' + m.standEinheit : '–';
+  $('stand').textContent = mitWert ? fmtE(Number(mitWert[m.feld]), m.standDez, m.standEinheit) : '–';
   $('zeit').textContent = 'Stand: ' + (abl ? new Date(abl) : mitWert ? new Date(mitWert.zeit) : zeit).toLocaleString('de-DE');
   const alterMin = (Date.now() - zeit) / 60000;
-  $('warn').textContent = alterMin > 45 ? '⚠ Letzter Wert ist älter als ' + Math.round(alterMin) + ' Minuten – Bridge prüfen.' : '';
+  $('warn').textContent = alterMin > 30 ? '⚠ Letzter Wert ist älter als ' + Math.round(alterMin) + ' Minuten – Bridge prüfen.' : '';
 
   const tv = tagesVerbrauch(m.feld);
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
-  $('heute').textContent = fmt((tv[iso(heute)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
-  $('gestern').textContent = fmt((tv[iso(gestern)] ?? NaN) * m.faktor, m.dez) + ' ' + m.einheit;
+  $('heute').textContent = fmtE(leer(tv[iso(heute)]) ? NaN : tv[iso(heute)] * m.faktor, m.dez, m.einheit);
+  $('gestern').textContent = fmtE(leer(tv[iso(gestern)]) ? NaN : tv[iso(gestern)] * m.faktor, m.dez, m.einheit);
 
   // Monat
   const monatPrefix = iso(heute).slice(0, 7);
-  const monatSumme = Object.entries(tv).filter(([d]) => d.startsWith(monatPrefix)).reduce((s, [, v]) => s + v, 0);
-  $('monat').textContent = fmt(monatSumme * m.faktor, m.dez) + ' ' + m.einheit;
+  const imMonat = Object.entries(tv).filter(([d]) => d.startsWith(monatPrefix));
+  $('monat').textContent = imMonat.length ? fmtE(imMonat.reduce((s, [, v]) => s + v, 0) * m.faktor, m.dez, m.einheit) : '–';
 
-  // letzte 30 Tage
-  const labels = [], werte = [];
-  for (let i = 29; i >= 0; i--) {
-    const d = iso(new Date(Date.now() - i * 864e5));
-    labels.push(d.slice(8, 10) + '.' + d.slice(5, 7) + '.');
-    werte.push(tv[d] !== undefined ? +(tv[d] * m.faktor).toFixed(m.dez) : null);
+  // Viertelstunden – letzte 24 h
+  const vs = viertelstunden(m.feld).filter(x => Date.now() - x.ende <= 864e5);
+  $('tViertel').textContent = 'Verbrauch pro Viertelstunde – letzte 24 h (' + m.einheit + ')';
+  chart('cViertel', 'bar', vs.map(x => hhmm(x.start)), vs.map(x => +(x.wert * m.faktor).toFixed(m.viertelDez)), m.farbe,
+    (i, v) => {
+      const x = vs[i];
+      const zeile = hhmm(x.start) + '–' + hhmm(x.ende) + ': ' + fmtE(v, m.viertelDez, m.einheit);
+      return medium === 'strom' ? [zeile, 'Ø Leistung: ' + fmt(v * 4, 2) + ' kW'] : zeile;
+    });
+
+  // Tage: höchstens 30, nur ab dem ersten Tag mit Wert
+  const tageMitWert = Object.keys(tv).sort();
+  const tLabels = [], tWerte = [], tDaten = [];
+  if (tageMitWert.length) {
+    const erster = new Date(Math.max(new Date(tageMitWert[0] + 'T12:00').getTime(), Date.now() - 29 * 864e5));
+    for (let d = new Date(erster); iso(d) <= iso(heute); d = new Date(d.getTime() + 864e5)) {
+      const k = iso(d);
+      tDaten.push(d);
+      tLabels.push(k.slice(8, 10) + '.' + k.slice(5, 7) + '.');
+      tWerte.push(tv[k] !== undefined ? +(tv[k] * m.faktor).toFixed(m.dez) : null);
+    }
   }
-  const vorhanden = werte.filter(v => v !== null);
-  $('schnitt').textContent = vorhanden.length ? fmt(vorhanden.reduce((a, b) => a + b, 0) / vorhanden.length, m.dez) + ' ' + m.einheit : '–';
-  $('tTage').textContent = 'Tagesverbrauch – letzte 30 Tage (' + m.einheit + ')';
-  chart('cTage', 'bar', labels, werte, m.farbe, m.einheit);
+  const vorhanden = tWerte.filter(v => v !== null);
+  $('schnitt').textContent = vorhanden.length ? fmtE(vorhanden.reduce((a, b) => a + b, 0) / vorhanden.length, m.dez, m.einheit) : '–';
+  $('tTage').textContent = 'Tagesverbrauch' + (tLabels.length >= 30 ? ' – letzte 30 Tage' : '') + ' (' + m.einheit + ')';
+  chart('cTage', 'bar', tLabels, tWerte, m.farbe,
+    (i, v) => tDaten[i].toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) + ': ' + fmtE(v, m.dez, m.einheit));
 
-  // letzte 12 Monate
+  // Monate: höchstens 12, nur ab dem ersten Monat mit Wert
   const mon = {};
   Object.entries(tv).forEach(([d, v]) => { const k = d.slice(0, 7); mon[k] = (mon[k] || 0) + v; });
-  const mLabels = [], mWerte = [];
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(heute.getFullYear(), heute.getMonth() - i, 1);
-    const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-    mLabels.push(d.toLocaleDateString('de-DE', { month:'short', year:'2-digit' }));
-    mWerte.push(mon[k] !== undefined ? +(mon[k] * m.faktor).toFixed(m.dez) : null);
+  const monate = Object.keys(mon).sort();
+  const mLabels = [], mWerte = [], mDaten = [];
+  if (monate.length) {
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(heute.getFullYear(), heute.getMonth() - i, 1);
+      const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+      if (k < monate[0]) continue;
+      mDaten.push(d);
+      mLabels.push(d.toLocaleDateString('de-DE', { month:'short', year:'2-digit' }));
+      mWerte.push(mon[k] !== undefined ? +(mon[k] * m.faktor).toFixed(m.dez) : null);
+    }
   }
-  $('tMonate').textContent = 'Monatsverbrauch – letzte 12 Monate (' + m.einheit + ')';
-  chart('cMonate', 'bar', mLabels, mWerte, m.farbe, m.einheit);
+  $('tMonate').textContent = 'Monatsverbrauch' + (mLabels.length >= 12 ? ' – letzte 12 Monate' : '') + ' (' + m.einheit + ')';
+  chart('cMonate', 'bar', mLabels, mWerte, m.farbe,
+    (i, v) => mDaten[i].toLocaleDateString('de-DE', { month:'long', year:'numeric' }) + ': ' + fmtE(v, m.dez, m.einheit));
 
   // Gas-Extras: stündlicher Verbrauch + Außentemperatur
   if (medium === 'gas') {
-    // nur volle Stunden (Gas steht jetzt jede Viertelstunde im Sheet, Diagramm bleibt stündlich)
-    const st = daten.messungen.filter(x => x.gas !== '' && x.gas !== null && x.gas !== undefined && new Date(x.zeit).getMinutes() === 0);
-    const mitTemp = [...st].reverse().find(x => x.temp !== '' && x.temp !== null && x.temp !== undefined);
-    $('temp').textContent = mitTemp ? fmt(Number(mitTemp.temp), 1) + ' °C (' +
-      new Date(mitTemp.zeit).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }) + ')' : '–';
-    const lab = [], verb = [], tmp = [];
+    const st = daten.messungen.filter(x => !leer(x.gas) && new Date(x.zeit).getMinutes() === 0);
+    const mitTemp = [...daten.messungen].reverse().find(x => !leer(x.temp));
+    $('temp').textContent = mitTemp ? fmt(Number(mitTemp.temp), 1) + ' °C (' + hhmm(new Date(mitTemp.zeit)) + ')' : '–';
+    const lab = [], verb = [], tmp = [], std = [];
     for (let i = 1; i < st.length; i++) {
-      lab.push(new Date(st[i].zeit).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }));
+      const a = new Date(st[i - 1].zeit), b = new Date(st[i].zeit);
+      if (b - a !== 36e5) continue;   // nur aufeinanderfolgende volle Stunden
+      std.push([a, b]);
+      lab.push(hhmm(a));
       verb.push(+(Number(st[i].gas) - Number(st[i - 1].gas)).toFixed(3));
-      tmp.push(st[i].temp === '' || st[i].temp === null || st[i].temp === undefined ? null : Number(st[i].temp));
+      tmp.push(leer(st[i].temp) ? null : Number(st[i].temp));
     }
-    if (charts.cGasStunde) charts.cGasStunde.destroy();
-    charts.cGasStunde = new Chart($('cGasStunde'), {
-      type: 'bar',
-      data: { labels: lab, datasets: [
-        { label:'m³', data: verb, backgroundColor: m.farbe, yAxisID:'y' },
-        { type:'line', label:'°C', data: tmp, borderColor:'#8e8e93', backgroundColor:'#8e8e93', pointRadius:2, tension:.3, spanGaps:true, yAxisID:'yT' }
-      ] },
-      options: { maintainAspectRatio:false, scales: {
-        y: { beginAtZero:true, title:{ display:true, text:'m³' } },
-        yT: { position:'right', grid:{ drawOnChartArea:false }, title:{ display:true, text:'°C' } }
-      } }
-    });
+    chart('cGasStunde', 'bar', lab, verb, m.farbe,
+      (i, v) => hhmm(std[i][0]) + '–' + hhmm(std[i][1]) + ': ' + fmtE(v, 3, 'm³'),
+      {
+        datasets: [{ type:'line', data: tmp, borderColor:'#8e8e93', backgroundColor:'#8e8e93', pointRadius: tmp.length < 20 ? 3 : 0,
+                     pointHoverRadius: 5, tension:.3, spanGaps:true, yAxisID:'yT' }],
+        tipp2: v => 'Außentemperatur: ' + fmtE(v, 1, '°C'),
+        scales: {
+          y: { beginAtZero:true, grace:'10%', ticks:{ maxTicksLimit:6 }, title:{ display:true, text:'m³' } },
+          yT: { position:'right', grid:{ drawOnChartArea:false }, ticks:{ maxTicksLimit:6 }, title:{ display:true, text:'°C' } }
+        }
+      });
   }
 
   // Strom-Extras
   if (medium === 'strom') {
-    $('leistung').textContent = fmt(Number(letzte.leistung), 0) + ' W';
+    $('leistung').textContent = fmtE(leer(letzte.leistung) ? NaN : Number(letzte.leistung), 0, 'W') + ' (' + hhmm(zeit) + ')';
     const ev = tagesVerbrauch('export');
-    $('einspeisung').textContent = fmt(ev[iso(heute)] ?? NaN, 2) + ' kWh';
-    chart('cLeistung', 'line',
-      daten.messungen.map(x => new Date(x.zeit).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' })),
-      daten.messungen.map(x => Number(x.leistung)), m.farbe, 'W');
+    $('einspeisung').textContent = fmtE(leer(ev[iso(heute)]) ? NaN : ev[iso(heute)], 2, 'kWh');
   }
 }
 
