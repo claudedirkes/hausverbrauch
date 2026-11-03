@@ -37,7 +37,7 @@
   .kpi .wert { font-size:20px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; }
   .kpi .eur { font-size:15px; font-weight:600; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums; }
   .preise { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
-  @media (min-width:640px) { .preise { grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); } }
+  @media (min-width:640px) { .preise { grid-template-columns:repeat(auto-fill, minmax(180px, 240px)); } }
   .ref { display:flex; flex-wrap:wrap; gap:6px 18px; }
   .ref b { font-variant-numeric:tabular-nums; }
   .preise label { display:flex; flex-direction:column; gap:4px; font-size:14px; color:var(--muted); }
@@ -132,14 +132,14 @@
   </div>
 
   <div class="card" style="margin-top:12px">
-    <div class="titel">Preise</div>
+    <div class="titel" id="tPreise">Preise</div>
     <div class="muted">Ein neuer Wert gilt ab heute. Vergangene Tage werden mit dem damals gültigen Preis gerechnet.</div>
     <div class="preise">
-      <label>⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
-      <label>🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
-      <label>💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
-      <label id="lGeteilt" style="display:none">🤝 Strom geteilt (€/kWh)<input id="pGeteilt" type="text" inputmode="decimal" placeholder="fehlt"></label>
-      <label>📏 Referenzleistung (kW)<input id="pReferenz" type="text" inputmode="decimal"></label>
+      <label data-m="strom">⚡ Strom (€/kWh)<input id="pStrom" type="text" inputmode="decimal"></label>
+      <label data-m="gas">🔥 Gas (€/m³)<input id="pGas" type="text" inputmode="decimal"></label>
+      <label data-m="wasser">💧 Wasser (€/m³)<input id="pWasser" type="text" inputmode="decimal"></label>
+      <label id="lGeteilt" data-m="strom" style="display:none">🤝 Strom geteilt (€/kWh)<input id="pGeteilt" type="text" inputmode="decimal" placeholder="fehlt"></label>
+      <label data-m="strom">📏 Referenzleistung (kW)<input id="pReferenz" type="text" inputmode="decimal"></label>
     </div>
     <div class="preisZeile">
       <button id="pSpeichern" type="button" class="haupt">Preise speichern</button>
@@ -316,7 +316,12 @@ function anzeigen() {
   });
   const gtText = (gesamt, g) => leer(g) ? [] : ['davon geteilt: ' + fmtE(g, 2, 'kWh') + ' (' + fmt(gesamt ? g / gesamt * 100 : 0, 0) + ' %)',
                                                  'vom Lieferanten: ' + fmtE(gesamt - g, 2, 'kWh')];
-  $('lGeteilt').style.display = Object.keys(GT).length ? 'flex' : 'none';
+  $('tPreise').textContent = 'Preise ' + { strom:'Strom', gas:'Gas', wasser:'Wasser' }[medium];
+  // Preisfelder nur für die gewählte Rubrik zeigen (geteilt nur, wenn Daten dazu importiert sind)
+  document.querySelectorAll('.preise label').forEach(l => {
+    const zeigen = l.dataset.m === medium && (l.id !== 'lGeteilt' || Object.keys(GT).length > 0);
+    l.style.display = zeigen ? 'flex' : 'none';
+  });
   document.querySelectorAll('.gtLeg').forEach(e => e.style.display = mitGT ? 'block' : 'none');
   const tv = tagesVerbrauch(m.feld);
   const heute = new Date(), gestern = new Date(Date.now() - 864e5);
