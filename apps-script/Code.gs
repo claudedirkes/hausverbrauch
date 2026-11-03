@@ -168,6 +168,8 @@ function doPost(e) {
   if (d.key !== WRITE_KEY) return antwort({ ok: false, fehler: 'key' });
   if (d.aktion === 'preis') return preisSpeichern(d);
   if (d.aktion === 'historie') return historieSpeichern(d);
+  if (d.aktion === 'leneda') return lenedaTagSpeichern(d);
+  if (d.aktion === 'rechnung') return rechnungSpeichern(d);
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
@@ -359,6 +361,7 @@ function doGet(e) {
 
   return antwort({
     ok: true,
+    eg: egMonate(),
     preise: preise,
     historie: historie,
     messungen: messungen.map(messungJson),
@@ -395,6 +398,90 @@ function aussenTemperatur() {
 // Einmal manuell ausführen, um die Berechtigung für externe Abrufe zu erteilen und den Abruf zu testen
 function testTemperatur() {
   console.log('Außentemperatur Diekirch: ' + aussenTemperatur() + ' °C');
+}
+
+// ==================== Energiegemeinschaft (Leneda über die Bridge) ====================
+// Die Bridge schickt je Tag die Leneda-Summen: Bezug, geteilt Ebene 1-4 (AIR, ACR/ACF, CEL, CER/CEN),
+// Rest für den Lieferanten und die Anzahl Viertelstunden. Im Blatt "Rechnungen EG" stehen die kWh
+// aus den Rechnungen (Gemeinschaft und Lieferant) je Monat, eingetragen über die WebApp.
+const KOPF_EG = ['Datum', 'Bezug (kWh)', 'Ebene 1 AIR (kWh)', 'Ebene 2 ACR/ACF (kWh)', 'Ebene 3 CEL (kWh)',
+                 'Ebene 4 CER/CEN (kWh)', 'Rest Lieferant (kWh)', 'Viertelstunden Bezug', 'Viertelstunden geteilt',
+                 'Viertelstunden Rest', 'abgerufen'];
+const KOPF_RE = ['Monat', 'Gemeinschaft (kWh)', 'Lieferant (kWh)'];
+
+function blattMitKopf(name, kopf) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, kopf.length).setValues([kopf]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('A:A').setNumberFormat('@');
+  }
+  return sh;
+}
+
+// Zeile mit Schlüssel in Spalte A ersetzen oder anhängen (Blatt bleibt nach Spalte A sortiert)
+function zeileSetzen(sh, zeile) {
+  const n = sh.getLastRow() - 1;
+  const keys = n > 0 ? sh.getRange(2, 1, n, 1).getDisplayValues().map(r => r[0]) : [];
+  const i = keys.indexOf(zeile[0]);
+  if (i >= 0) { sh.getRange(i + 2, 1, 1, zeile.length).setValues([zeile]); return; }
+  sh.getRange(n + 2, 1, 1, zeile.length).setValues([zeile]);
+  if (n > 0 && keys[n - 1] > zeile[0]) sh.getRange(2, 1, n + 1, sh.getLastColumn()).sort(1);
+}
+
+function lenedaTagSpeichern(d) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.datum)) return antwort({ ok: false, fehler: 'Datum ungültig' });
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const z = v => (v === undefined || v === null) ? '' : Number(v);
+    zeileSetzen(blattMitKopf('Energiegemeinschaft', KOPF_EG), [d.datum, z(d.bezug), z(d.l1), z(d.l2), z(d.l3), z(d.l4), z(d.rest),
+      z(d.nBezug), z(d.nGeteilt), z(d.nRest), Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm')]);
+  } finally {
+    lock.releaseLock();
+  }
+  return antwort({ ok: true });
+}
+
+// Rechnungswerte eines Monats aus der WebApp (leer = löschen)
+function rechnungSpeichern(d) {
+  if (!/^\d{4}-\d{2}$/.test(d.monat)) return antwort({ ok: false, fehler: 'Monat ungültig' });
+  const z = v => (v === '' || v === undefined || v === null) ? '' : Number(String(v).replace(',', '.'));
+  const g = z(d.gemeinschaft), l = z(d.lieferant);
+  if ((g !== '' && isNaN(g)) || (l !== '' && isNaN(l))) return antwort({ ok: false, fehler: 'ungültige Zahl' });
+  zeileSetzen(blattMitKopf('Rechnungen EG', KOPF_RE), [d.monat, g, l]);
+  return antwort({ ok: true });
+}
+
+// Monatssummen für die WebApp
+function egMonate() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('Energiegemeinschaft');
+  const monate = {};
+  const zahl = v => { const x = Number(v); return isNaN(x) ? 0 : x; };
+  if (sh && sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, 10).getValues().forEach(r => {
+      const d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+      const m = monate[d.slice(0, 7)] || (monate[d.slice(0, 7)] = { monat: d.slice(0, 7), bezug: 0, l1: 0, l2: 0, l3: 0, l4: 0, rest: 0,
+                                                                     tage: 0, nBezug: 0, nGeteilt: 0, nRest: 0, bis: d });
+      ['bezug', 'l1', 'l2', 'l3', 'l4', 'rest', 'nBezug', 'nGeteilt', 'nRest'].forEach((f, i) => m[f] += zahl(r[i + 1]));
+      m.tage++;
+      if (d > m.bis) m.bis = d;
+    });
+  }
+  const re = ss.getSheetByName('Rechnungen EG');
+  if (re && re.getLastRow() > 1) {
+    re.getRange(2, 1, re.getLastRow() - 1, 3).getValues().forEach(r => {
+      const k = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM') : String(r[0]);
+      const m = monate[k] || (monate[k] = { monat: k });
+      m.rGemeinschaft = r[1] === '' ? null : Number(r[1]);
+      m.rLieferant = r[2] === '' ? null : Number(r[2]);
+    });
+  }
+  return Object.keys(monate).sort().map(k => monate[k]);
 }
 
 function antwort(obj) {

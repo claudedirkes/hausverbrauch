@@ -5,6 +5,8 @@
 // Bibliotheken: ArduinoJson (v7), WiFiManager (tzapu).
 // Update über WLAN: prüft beim Start und alle 24 h firmware/version.txt im Repo und installiert bei
 // höherer Nummer firmware/hausverbrauch_ota.bin. Partitionsschema: "Minimal SPIFFS (… with OTA)".
+// Leneda (ab v8): holt täglich je Tag Bezug, geteilten Strom (4 Ebenen) und Rest für den Lieferanten
+// und schickt die Tagessummen ans Script. Zugang wird auf http://<IP>/leneda eingegeben (NVS).
 // Script-URL und Key werden beim ersten Start im Flash (NVS) gespeichert; die OTA-Datei im
 // öffentlichen Repo enthält deshalb nur Platzhalter.
 
@@ -29,7 +31,7 @@ const long NACHHOLEN_S = 5L * 60L; // fehlgeschlagene Abfrage bis 5 Min. nach de
 const char* ZEITZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Luxemburg inkl. Sommerzeit
 // --------------------------------------------
 
-const int FW_VERSION = 7;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 8;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -57,6 +59,7 @@ th{color:var(--m);font-weight:600;font-size:14px}tr+tr td{border-top:1px solid r
 <tr><td>L1</td><td id="w1">&ndash;</td><td id="v1">&ndash;</td><td id="a1">&ndash;</td></tr>
 <tr><td>L2</td><td id="w2">&ndash;</td><td id="v2">&ndash;</td><td id="a2">&ndash;</td></tr>
 <tr><td>L3</td><td id="w3">&ndash;</td><td id="v3">&ndash;</td><td id="a3">&ndash;</td></tr></table></div>
+<div class="c"><div class="m"><a href="/leneda" style="color:inherit">Leneda-Abruf</a></div></div>
 <div class="c"><div class="m">Firmware <span id="fw">&ndash;</span> &middot; <span id="dg"></span></div><div style="margin-top:8px"><button id="upd" type="button">Update pr&uuml;fen</button></div><div class="m" id="us" style="margin-top:8px"></div></div></div>
 <script>const $=i=>document.getElementById(i),f=(v,d)=>v==null?'&ndash;':Number(v).toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
 async function hol(){try{const r=await fetch('/live',{cache:'no-store'}),d=await r.json();
@@ -314,6 +317,140 @@ void rasterPruefen() {
   }
 }
 
+
+// ==================== Leneda (Energiegemeinschaft) ====================
+// Je Tag (Ortszeit) werden 6 Reihen geholt und summiert: Bezug, geteilt Ebene 1-4, Rest für den Lieferanten.
+// Fortschritt: lenAb = nächster abzurufender Tag. Täglich ab 7 Uhr werden die letzten 7 Tage neu geholt,
+// weil Leneda verzögert liefert. Nie in den ersten 6 Minuten nach einem Rasterpunkt (dann läuft die Messung).
+const char* LENEDA_URL = "https://api.leneda.lu/api/metering-points/";
+const char* LENEDA_OBIS[6] = { "1-1:1.29.0", "1-65:1.29.1", "1-65:1.29.3", "1-65:1.29.2", "1-65:1.29.4", "1-65:1.29.9" };
+const char* LENEDA_FELD[6] = { "bezug", "l1", "l2", "l3", "l4", "rest" };
+
+String lenKey, lenId, lenPod, lenAb, lenZurueck, lenStatus = "nicht eingerichtet", lenLetzter = "-";
+unsigned long lenNaechsterMs = 0;
+
+void lenedaLaden() {
+  Preferences p; p.begin("leneda", true);
+  lenKey = p.getString("key", ""); lenId = p.getString("id", ""); lenPod = p.getString("pod", "");
+  lenAb = p.getString("ab", ""); lenZurueck = p.getString("zur", ""); lenLetzter = p.getString("letzter", "-");
+  p.end();
+  if (lenKey.length() && lenId.length() && lenPod.length() && lenAb.length()) lenStatus = "bereit";
+}
+void lenedaMerken(const char* k, const String& v) { Preferences p; p.begin("leneda", false); p.putString(k, v); p.end(); }
+
+// "JJJJ-MM-TT" <-> Zeit (Ortszeit, Mitternacht bzw. Mittag)
+time_t tagZeit(const String& d, int stunde) {
+  struct tm t = {}; t.tm_year = d.substring(0, 4).toInt() - 1900; t.tm_mon = d.substring(5, 7).toInt() - 1;
+  t.tm_mday = d.substring(8, 10).toInt(); t.tm_hour = stunde; t.tm_isdst = -1;
+  return mktime(&t);
+}
+String tagText(time_t z) { struct tm t; localtime_r(&z, &t); char b[11]; strftime(b, sizeof b, "%Y-%m-%d", &t); return b; }
+String tagPlus(const String& d, int n) { return tagText(tagZeit(d, 12) + (time_t)n * 86400); }
+String utcText(time_t z) { struct tm t; gmtime_r(&z, &t); char b[21]; strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%SZ", &t); return b; }
+
+// Eine Reihe für einen Tag holen. Rückgabe: HTTP-Code; summe in kWh, anzahl = Werte
+int lenedaReihe(const char* obis, const String& von, const String& bis, double& summe, int& anzahl) {
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url = String(LENEDA_URL) + lenPod + "/time-series?obisCode=" + obis + "&startDateTime=" + von + "&endDateTime=" + bis;
+  http.begin(client, url);
+  http.setTimeout(20000);
+  http.addHeader("X-API-KEY", lenKey);
+  http.addHeader("X-ENERGY-ID", lenId);
+  int code = http.GET();
+  summe = 0; anzahl = 0;
+  if (code == 200) {
+    JsonDocument filter;
+    filter["unit"] = true; filter["intervalLength"] = true; filter["items"][0]["value"] = true;
+    JsonDocument j;
+    DeserializationError err = deserializeJson(j, http.getString(), DeserializationOption::Filter(filter));
+    if (err) code = -100;
+    else {
+      String iv = j["intervalLength"] | "PT15M";
+      double h = iv == "PT1H" ? 1.0 : iv == "PT30M" ? 0.5 : 0.25;
+      bool kw = String(j["unit"] | "") == "kW";
+      for (JsonObject it : j["items"].as<JsonArray>()) { summe += (double)(it["value"] | 0.0) * (kw ? h : 1.0); anzahl++; }
+    }
+  }
+  http.end();
+  return code;
+}
+
+// Einen Tag abrufen und senden. Rückgabe: 1 = gesendet, 0 = Leneda hat noch keine Daten, -1 = Fehler
+int lenedaTag(const String& tag) {
+  String von = utcText(tagZeit(tag, 0)), bis = utcText(tagZeit(tagPlus(tag, 1), 0));
+  JsonDocument out;
+  out["key"] = writeKey; out["aktion"] = "leneda"; out["datum"] = tag;
+  int nGeteilt = 0;
+  for (int i = 0; i < 6; i++) {
+    double summe; int anzahl;
+    int code = lenedaReihe(LENEDA_OBIS[i], von, bis, summe, anzahl);
+    if (code != 200) { lenStatus = String("Fehler ") + code + " bei " + LENEDA_OBIS[i] + " (" + tag + ")"; return -1; }
+    if (i == 0 && anzahl == 0) return 0;
+    out[LENEDA_FELD[i]] = round(summe * 1000) / 1000.0;
+    if (i == 0) out["nBezug"] = anzahl; else if (i == 5) out["nRest"] = anzahl; else nGeteilt += anzahl;
+  }
+  out["nGeteilt"] = nGeteilt;
+  String body; serializeJson(out, body);
+  if (!anScriptSenden(body)) { lenStatus = "Script nicht erreichbar (" + tag + ")"; return -1; }
+  return 1;
+}
+
+void lenedaPruefen() {
+  if (!zeitOk() || lenStatus == "nicht eingerichtet" || millis() < lenNaechsterMs) return;
+  long jetzt = (long)time(nullptr);
+  if (jetzt % RASTER_S < 6 * 60) return;              // Messung hat Vorrang
+  String heute = tagText(jetzt);
+  struct tm t; time_t z = jetzt; localtime_r(&z, &t);
+  if (t.tm_hour >= 7 && lenZurueck != heute) {          // täglich: letzte 7 Tage neu holen
+    String ab = tagPlus(heute, -7);
+    if (lenAb > ab) { lenAb = ab; lenedaMerken("ab", lenAb); }
+    lenZurueck = heute; lenedaMerken("zur", lenZurueck);
+  }
+  if (lenAb >= heute) return;
+  wlanVerbinden();
+  if (WiFi.status() != WL_CONNECTED) { lenNaechsterMs = millis() + 60000; return; }
+  int r = lenedaTag(lenAb);
+  if (r == 1) {
+    lenLetzter = lenAb; lenedaMerken("letzter", lenLetzter);
+    lenStatus = "OK, zuletzt " + lenAb;
+    lenAb = tagPlus(lenAb, 1); lenedaMerken("ab", lenAb);
+    lenNaechsterMs = millis() + 5000;
+  } else if (r == 0) {
+    if (lenAb < tagPlus(heute, -10)) { lenAb = tagPlus(lenAb, 1); lenedaMerken("ab", lenAb); lenNaechsterMs = millis() + 5000; }
+    else { lenStatus = "wartet auf Leneda ab " + lenAb; lenAb = heute; lenedaMerken("ab", lenAb); }  // morgen ab 7 Uhr erneut
+  } else {
+    lenNaechsterMs = millis() + 5UL * 60000;              // Fehler: in 5 Min. erneut
+  }
+  Serial.println("Leneda: " + lenStatus);
+}
+
+// Einstellungsseite http://<IP>/leneda (der API-Key wird nie angezeigt)
+void seiteLeneda() {
+  if (server.method() == HTTP_POST) {
+    if (server.arg("id").length())  { lenId = server.arg("id");   lenedaMerken("id", lenId); }
+    if (server.arg("pod").length()) { lenPod = server.arg("pod"); lenedaMerken("pod", lenPod); }
+    if (server.arg("key").length()) { lenKey = server.arg("key"); lenedaMerken("key", lenKey); }
+    if (server.arg("ab").length() == 10) { lenAb = server.arg("ab"); lenedaMerken("ab", lenAb); }
+    lenStatus = (lenKey.length() && lenId.length() && lenPod.length() && lenAb.length()) ? "bereit" : "nicht eingerichtet";
+    lenNaechsterMs = 0;
+    server.sendHeader("Location", "/leneda"); server.send(303); return;
+  }
+  String h = F("<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>Leneda</title><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:520px;margin:0 auto;padding:16px;background:#f3f6f9;color:#1d2733}"
+    "@media(prefers-color-scheme:dark){body{background:#10161d;color:#e6edf3}input{background:#1a222c;color:#e6edf3}}"
+    "label{display:block;margin:10px 0 4px;font-size:14px}input{width:100%;box-sizing:border-box;font-size:16px;padding:8px;border:1px solid #8888;border-radius:8px}"
+    "button{margin-top:14px;font-size:16px;padding:10px 16px;border-radius:8px;border:0;background:#e6a700;color:#1d2733;font-weight:600}"
+    ".m{color:#8b97a5;font-size:14px}</style></head><body><h2>Leneda-Abruf</h2>");
+  h += "<p class=\"m\">Status: " + lenStatus + "<br>Zuletzt gesendet: " + lenLetzter + "<br>Nächster Tag: " + (lenAb.length() ? lenAb : "-") + "</p>";
+  h += "<form method=\"post\"><label>Energy-ID</label><input name=\"id\" value=\"" + lenId + "\">";
+  h += "<label>Zählpunkt Strom (POD)</label><input name=\"pod\" value=\"" + lenPod + "\">";
+  h += String("<label>API-Key ") + (lenKey.length() ? "(gespeichert, leer lassen = behalten)" : "") + "</label><input name=\"key\" type=\"password\" autocomplete=\"off\">";
+  h += "<label>Abrufen ab (JJJJ-MM-TT, setzt den Fortschritt zurück)</label><input name=\"ab\" type=\"date\">";
+  h += F("<button>Speichern</button></form><p class=\"m\"><a href=\"/\" style=\"color:inherit\">zurück</a></p></body></html>");
+  server.send(200, "text/html; charset=utf-8", h);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -332,6 +469,7 @@ void setup() {
   for (int i = 0; i < 20 && !zeitOk(); i++) delay(500);
   Serial.println(zeitOk() ? "Uhrzeit OK" : "Uhrzeit noch nicht da, wird nachgeholt");
   zugangLaden();
+  lenedaLaden();
   otaPruefen();
   letztesOta = millis();
 
@@ -340,12 +478,14 @@ void setup() {
   server.on("/live", datenLive);
   server.on("/apple-touch-icon.png", seiteIcon);
   server.on("/update", HTTP_POST, seiteUpdate);
+  server.on("/leneda", seiteLeneda);
   server.begin();
   Serial.println("Live-Anzeige: http://hausverbrauch.local bzw. http://" + WiFi.localIP().toString());
 }
 
 void loop() {
   rasterPruefen();
+  lenedaPruefen();
   if (millis() - letztesOta >= OTA_INTERVALL_MS) {
     letztesOta = millis();
     wlanVerbinden();
