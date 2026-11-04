@@ -31,7 +31,7 @@ const long NACHHOLEN_S = 5L * 60L; // fehlgeschlagene Abfrage bis 5 Min. nach de
 const char* ZEITZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Luxemburg inkl. Sommerzeit
 // --------------------------------------------
 
-const int FW_VERSION = 8;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 9;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -327,6 +327,9 @@ const char* LENEDA_OBIS[6] = { "1-1:1.29.0", "1-65:1.29.1", "1-65:1.29.3", "1-65
 const char* LENEDA_FELD[6] = { "bezug", "l1", "l2", "l3", "l4", "rest" };
 
 String lenKey, lenId, lenPod, lenAb, lenZurueck, lenStatus = "nicht eingerichtet", lenLetzter = "-";
+String lenLuecken = "";        // Tage mit fehlender Aufteilung (kommagetrennt), aus dem Script
+bool lenLueckenHolen = true;   // Lückenliste beim Start und täglich neu holen
+const int LUECKEN_TAGE = 45;   // so weit zurück werden Lücken nachgeholt
 unsigned long lenNaechsterMs = 0;
 
 void lenedaLaden() {
@@ -396,6 +399,30 @@ int lenedaTag(const String& tag) {
   return 1;
 }
 
+// Lückenliste vom Script holen (GET, Google leitet um). true = Liste erhalten
+bool lenedaLueckenLaden(const String& heute) {
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url = scriptUrl + "?eglueken=1&von=" + tagPlus(heute, -LUECKEN_TAGE) + "&bis=" + tagPlus(heute, -8);
+  http.begin(client, url);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(20000);
+  int code = http.GET();
+  bool ok = false;
+  if (code == 200) {
+    JsonDocument j;
+    if (!deserializeJson(j, http.getString()) && j["ok"]) {
+      lenLuecken = "";
+      for (JsonVariant v : j["luecken"].as<JsonArray>()) lenLuecken += (lenLuecken.length() ? "," : "") + v.as<String>();
+      ok = true;
+    }
+  }
+  http.end();
+  Serial.printf("Leneda-Lücken: HTTP %d, %s\n", code, lenLuecken.c_str());
+  return ok;
+}
+int lueckenAnzahl() { if (!lenLuecken.length()) return 0; int n = 1; for (char c : lenLuecken) if (c == ',') n++; return n; }
+
 void lenedaPruefen() {
   if (!zeitOk() || lenStatus == "nicht eingerichtet" || millis() < lenNaechsterMs) return;
   long jetzt = (long)time(nullptr);
@@ -406,8 +433,30 @@ void lenedaPruefen() {
     String ab = tagPlus(heute, -7);
     if (lenAb > ab) { lenAb = ab; lenedaMerken("ab", lenAb); }
     lenZurueck = heute; lenedaMerken("zur", lenZurueck);
+    lenLueckenHolen = true;
   }
-  if (lenAb >= heute) return;
+  if (lenAb >= heute) {                                  // laufender Abruf fertig: ältere Lücken nachholen
+    if (lenLueckenHolen) {
+      wlanVerbinden();
+      if (WiFi.status() == WL_CONNECTED && lenedaLueckenLaden(heute)) lenLueckenHolen = false;
+      else { lenNaechsterMs = millis() + 5UL * 60000; return; }
+    }
+    if (!lenLuecken.length()) return;
+    int k = lenLuecken.indexOf(',');
+    String tag = k < 0 ? lenLuecken : lenLuecken.substring(0, k);
+    wlanVerbinden();
+    if (WiFi.status() != WL_CONNECTED) { lenNaechsterMs = millis() + 60000; return; }
+    int r = lenedaTag(tag);
+    if (r >= 0) {                                        // gesendet oder (noch) keine Daten: nächste Lücke
+      lenLuecken = k < 0 ? "" : lenLuecken.substring(k + 1);
+      lenStatus = "Lücke " + tag + " erneut geholt, offen: " + lueckenAnzahl();
+      lenNaechsterMs = millis() + 5000;
+    } else {
+      lenNaechsterMs = millis() + 5UL * 60000;
+    }
+    Serial.println("Leneda: " + lenStatus);
+    return;
+  }
   wlanVerbinden();
   if (WiFi.status() != WL_CONNECTED) { lenNaechsterMs = millis() + 60000; return; }
   int r = lenedaTag(lenAb);
@@ -442,7 +491,8 @@ void seiteLeneda() {
     "label{display:block;margin:10px 0 4px;font-size:14px}input{width:100%;box-sizing:border-box;font-size:16px;padding:8px;border:1px solid #8888;border-radius:8px}"
     "button{margin-top:14px;font-size:16px;padding:10px 16px;border-radius:8px;border:0;background:#e6a700;color:#1d2733;font-weight:600}"
     ".m{color:#8b97a5;font-size:14px}</style></head><body><h2>Leneda-Abruf</h2>");
-  h += "<p class=\"m\">Status: " + lenStatus + "<br>Zuletzt gesendet: " + lenLetzter + "<br>Nächster Tag: " + (lenAb.length() ? lenAb : "-") + "</p>";
+  h += "<p class=\"m\">Status: " + lenStatus + "<br>Zuletzt gesendet: " + lenLetzter + "<br>Nächster Tag: " + (lenAb.length() ? lenAb : "-") +
+       "<br>Lücken (bis " + LUECKEN_TAGE + " Tage zurück, täglich ab 7 Uhr): " + (lenLuecken.length() ? lenLuecken : "keine") + "</p>";
   h += "<form method=\"post\"><label>Energy-ID</label><input name=\"id\" value=\"" + lenId + "\">";
   h += "<label>Zählpunkt Strom (POD)</label><input name=\"pod\" value=\"" + lenPod + "\">";
   h += String("<label>API-Key ") + (lenKey.length() ? "(gespeichert, leer lassen = behalten)" : "") + "</label><input name=\"key\" type=\"password\" autocomplete=\"off\">";

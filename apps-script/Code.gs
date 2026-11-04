@@ -327,7 +327,31 @@ function bereich(p) {
   return antwort({ ok: true, aufl: 'tag', tage: liste });
 }
 
+// Für die Bridge: Tage zwischen von und bis (yyyy-MM-dd), bei denen Leneda die Aufteilung noch nicht geliefert hat
+// (keine Viertelstunden für geteilt oder Rest, oder Tag fehlt). Nur ab dem ersten Tag mit geteiltem Strom.
+function egLuecken(p) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.von) || !/^\d{4}-\d{2}-\d{2}$/.test(p.bis)) return antwort({ ok: false, fehler: 'Datum ungültig' });
+  const sh = SpreadsheetApp.getActive().getSheetByName('Energiegemeinschaft');
+  if (!sh || sh.getLastRow() < 2) return antwort({ ok: true, luecken: [] });
+  const zeilen = sh.getRange(2, 1, sh.getLastRow() - 1, 10).getValues().map(r => ({
+    d: r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]),
+    nG: Number(r[8]) || 0, nR: Number(r[9]) || 0 }));
+  const start = zeilen.filter(z => z.nG > 0).map(z => z.d).sort()[0];
+  if (!start) return antwort({ ok: true, luecken: [] });
+  const map = {};
+  zeilen.forEach(z => map[z.d] = z);
+  const luecken = [];
+  let d = p.von < start ? start : p.von;
+  while (d <= p.bis && luecken.length < 60) {
+    const z = map[d];
+    if (!z || z.nG === 0 || z.nR === 0) luecken.push(d);
+    d = Utilities.formatDate(new Date(Utilities.parseDate(d, TZ, 'yyyy-MM-dd').getTime() + 36 * 3600e3), TZ, 'yyyy-MM-dd');
+  }
+  return antwort({ ok: true, luecken: luecken });
+}
+
 function doGet(e) {
+  if (e && e.parameter && e.parameter.eglueken) return egLuecken(e.parameter);
   einspeisungEntfernen();
   if (e && e.parameter && e.parameter.von) return bereich(e.parameter);
   const ss = SpreadsheetApp.getActive();
