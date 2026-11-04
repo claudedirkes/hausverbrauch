@@ -317,6 +317,15 @@ function bereich(p) {
       if (v[f] === undefined && zahl(r[c]) !== null) v[f] = zahl(r[c]);
     });
   });
+  // dann Leneda-Abruf der Bridge (Blatt "Energiegemeinschaft"): Strom, Gas nur in m³
+  const egB = ss.getSheetByName('Energiegemeinschaft');
+  if (egB && egB.getLastRow() > 1) egB.getRange(2, 1, egB.getLastRow() - 1, Math.min(egB.getLastColumn(), KOPF_EG.length)).getValues().forEach(r => {
+    const d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
+    if (d < p.von || d > p.bis) return;
+    const v = verbrauch[d] || (verbrauch[d] = {});
+    if (v.strom === undefined && zahl(r[1]) !== null) v.strom = zahl(r[1]);
+    if (v.gas === undefined && Number(r[12]) > 0 && /^m(3|³)$/i.test(String(r[13] || '')) && zahl(r[11]) !== null) v.gas = zahl(r[11]);
+  });
   Object.keys(verbrauch).forEach(d => tag(d));
 
   const liste = Object.keys(tage).filter(d => d >= p.von && d <= p.bis).sort().map(d => {
