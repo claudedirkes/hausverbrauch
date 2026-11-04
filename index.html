@@ -857,7 +857,10 @@ function eigenZeichnen(d, ids, tage) {
 // Abweichung ab 0,05 kWh rot (Leneda und Rechnungen runden auf 0,001 kWh)
 const EG_TOL = 0.05;
 function egZeigen() {
-  const ms = (daten.eg || []).slice().reverse();
+  // erst ab dem ersten Monat mit Aufteilung (Beginn der Energiegemeinschaft) anzeigen
+  const alle = daten.eg || [];
+  const erster = alle.find(m => (m.l1 || 0) + (m.l2 || 0) + (m.l3 || 0) + (m.l4 || 0) + (m.rest || 0) > 0 || !leer(m.rGemeinschaft) || !leer(m.rLieferant));
+  const ms = erster ? alle.filter(m => m.monat >= erster.monat).reverse() : [];
   const kwh = v => leer(v) ? '–' : fmt(v, 3);
   const diff = (a, b) => {
     if (leer(a) || leer(b)) return '';
