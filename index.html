@@ -214,7 +214,7 @@ const API = 'https://script.google.com/macros/s/AKfycbzhpkMh_SM98CTPeatrLI6F0BhO
 const MEDIEN = {
   strom:  { feld:'import', einheit:'kWh', faktor:1,    dez:2, viertelDez:3, standEinheit:'kWh', standDez:3, farbe:'#e6a700', text:'#1d2733' },
   gas:    { feld:'gas',    einheit:'m³',  faktor:1,    dez:2, viertelDez:3, standEinheit:'m³',  standDez:3, farbe:'#d9534f', text:'#fff' },
-  wasser: { feld:'wasser', einheit:'L',   faktor:1000, dez:0, viertelDez:0, standEinheit:'m³',  standDez:3, farbe:'#1f6fd1', text:'#fff' }
+  wasser: { feld:'wasser', einheit:'m³',  faktor:1,    dez:3, viertelDez:3, standEinheit:'m³',  standDez:3, farbe:'#1f6fd1', text:'#fff' }
 };
 let daten = null, medium = 'strom', charts = {};
 
@@ -404,9 +404,7 @@ function anzeigen() {
   // Monat und Jahr
   const summeKpi = (id, prefix) => {
     const e = Object.entries(tv).filter(([d]) => d.startsWith(prefix));
-    // Wasser: Monat und Jahr in m³ (Stunde/Tag bleiben in Litern)
-    const summe = e.reduce((s, [, v]) => s + v, 0);
-    $(id).textContent = !e.length ? '–' : medium === 'wasser' ? fmtE(summe, 2, 'm³') : fmtE(summe * m.faktor, m.dez, m.einheit);
+    $(id).textContent = e.length ? fmtE(e.reduce((s, [, v]) => s + v, 0) * m.faktor, m.dez, m.einheit) : '–';
     $(id + 'E').textContent = e.length ? eur(kostenTage(e, medium)) : '';
   };
   summeKpi('monat', iso(heute).slice(0, 7));
@@ -738,7 +736,7 @@ async function preiseSpeichern() {
 const EIGEN = [
   { gruppe:'Verbrauch',   id:'strom',    name:'Strom',          einheit:'kWh', farbe:'#e6a700', f:'import', verbrauch:true, dez:3 },
   { gruppe:'Verbrauch',   id:'gas',      name:'Gas',            einheit:'m³',  farbe:'#d9534f', f:'gas',    verbrauch:true, dez:3 },
-  { gruppe:'Verbrauch',   id:'wasser',   name:'Wasser',         einheit:'L',   farbe:'#1f6fd1', f:'wasser', verbrauch:true, dez:0, faktor:1000 },
+  { gruppe:'Verbrauch',   id:'wasser',   name:'Wasser',         einheit:'m³',  farbe:'#1f6fd1', f:'wasser', verbrauch:true, dez:3 },
   { gruppe:'Leistung',    id:'leistung', name:'Leistung gesamt',einheit:'W',   farbe:'#9aa5b1', dez:0 },
   { gruppe:'Leistung',    id:'l1',       name:'L1',             einheit:'W',   farbe:'#e67e22', dez:0 },
   { gruppe:'Leistung',    id:'l2',       name:'L2',             einheit:'W',   farbe:'#16a085', dez:0 },
