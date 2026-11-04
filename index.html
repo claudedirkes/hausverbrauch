@@ -404,7 +404,9 @@ function anzeigen() {
   // Monat und Jahr
   const summeKpi = (id, prefix) => {
     const e = Object.entries(tv).filter(([d]) => d.startsWith(prefix));
-    $(id).textContent = e.length ? fmtE(e.reduce((s, [, v]) => s + v, 0) * m.faktor, m.dez, m.einheit) : '–';
+    // Wasser: Monat und Jahr in m³ (Stunde/Tag bleiben in Litern)
+    const summe = e.reduce((s, [, v]) => s + v, 0);
+    $(id).textContent = !e.length ? '–' : medium === 'wasser' ? fmtE(summe, 2, 'm³') : fmtE(summe * m.faktor, m.dez, m.einheit);
     $(id + 'E').textContent = e.length ? eur(kostenTage(e, medium)) : '';
   };
   summeKpi('monat', iso(heute).slice(0, 7));
