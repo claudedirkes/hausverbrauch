@@ -359,6 +359,22 @@ function doGet(e) {
     strom: zahlOderNull(r[1]), ueber: zahlOderNull(r[2]), gas: zahlOderNull(r[3]), geteilt: zahlOderNull(r[4]), wasser: zahlOderNull(r[5])
   })) : [];
 
+  // Tage ohne Strom in der Historie: Bezug aus dem Leneda-Abruf der Bridge (Blatt "Energiegemeinschaft") ergänzen,
+  // z. B. Tage nach dem letzten CSV-Import und vor der ersten eigenen Messung
+  const eg = ss.getSheetByName('Energiegemeinschaft');
+  if (eg && eg.getLastRow() > 1) {
+    const hMap = {};
+    historie.forEach(h => hMap[h.datum] = h);
+    eg.getRange(2, 1, eg.getLastRow() - 1, 2).getValues().forEach(r => {
+      const d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
+      const v = zahlOderNull(r[1]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || v === null) return;
+      const h = hMap[d] || (hMap[d] = historie[historie.push({ datum: d, strom: null, ueber: null, gas: null, geteilt: null, wasser: null }) - 1]);
+      if (h.strom === null) h.strom = v;
+    });
+    historie.sort((a, b) => a.datum < b.datum ? -1 : 1);
+  }
+
   return antwort({
     ok: true,
     eg: egMonate(),
