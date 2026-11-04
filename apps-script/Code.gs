@@ -385,23 +385,35 @@ function doGet(e) {
 
   // Tage ohne Strom in der Historie: Bezug aus dem Leneda-Abruf der Bridge (Blatt "Energiegemeinschaft") ergänzen,
   // z. B. Tage nach dem letzten CSV-Import und vor der ersten eigenen Messung
+  // Zusätzlich je Tag die Leneda-Werte (Strom, Gas) für den Vergleich mit dem HomeWizard
   const eg = ss.getSheetByName('Energiegemeinschaft');
+  const lenTage = [];
   if (eg && eg.getLastRow() > 1) {
     const hMap = {};
     historie.forEach(h => hMap[h.datum] = h);
-    eg.getRange(2, 1, eg.getLastRow() - 1, 2).getValues().forEach(r => {
+    const nSp = Math.min(eg.getLastColumn(), KOPF_EG.length);
+    eg.getRange(2, 1, eg.getLastRow() - 1, nSp).getValues().forEach(r => {
       const d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]);
-      const v = zahlOderNull(r[1]);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || v === null) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+      const strom = zahlOderNull(r[1]);
+      const nGas = Number(r[12]) || 0;
+      const gas = nGas > 0 ? zahlOderNull(r[11]) : null;
+      const einheit = String(r[13] || '');
+      lenTage.push({ datum: d, strom: strom, gas: gas, einheit: einheit });
+      const gasM3 = gas !== null && /^m(3|³)$/i.test(einheit);
+      if (strom === null && !gasM3) return;
       const h = hMap[d] || (hMap[d] = historie[historie.push({ datum: d, strom: null, ueber: null, gas: null, geteilt: null, wasser: null }) - 1]);
-      if (h.strom === null) h.strom = v;
+      if (h.strom === null && strom !== null) h.strom = strom;
+      if (h.gas === null && gasM3) h.gas = gas;
     });
     historie.sort((a, b) => a.datum < b.datum ? -1 : 1);
+    lenTage.sort((a, b) => a.datum < b.datum ? -1 : 1);
   }
 
   return antwort({
     ok: true,
     eg: egMonate(),
+    lenTage: lenTage.slice(-400),
     preise: preise,
     historie: historie,
     messungen: messungen.map(messungJson),
@@ -446,7 +458,7 @@ function testTemperatur() {
 // aus den Rechnungen (Gemeinschaft und Lieferant) je Monat, eingetragen über die WebApp.
 const KOPF_EG = ['Datum', 'Bezug (kWh)', 'Ebene 1 AIR (kWh)', 'Ebene 2 ACR/ACF (kWh)', 'Ebene 3 CEL (kWh)',
                  'Ebene 4 CER/CEN (kWh)', 'Rest Lieferant (kWh)', 'Viertelstunden Bezug', 'Viertelstunden geteilt',
-                 'Viertelstunden Rest', 'abgerufen'];
+                 'Viertelstunden Rest', 'abgerufen', 'Gas Leneda', 'Werte Gas', 'Einheit Gas'];
 const KOPF_RE = ['Monat', 'Gemeinschaft (kWh)', 'Lieferant (kWh)'];
 
 function blattMitKopf(name, kopf) {
@@ -477,8 +489,11 @@ function lenedaTagSpeichern(d) {
   lock.waitLock(20000);
   try {
     const z = v => (v === undefined || v === null) ? '' : Number(v);
-    zeileSetzen(blattMitKopf('Energiegemeinschaft', KOPF_EG), [d.datum, z(d.bezug), z(d.l1), z(d.l2), z(d.l3), z(d.l4), z(d.rest),
-      z(d.nBezug), z(d.nGeteilt), z(d.nRest), Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm')]);
+    const sh = blattMitKopf('Energiegemeinschaft', KOPF_EG);
+    if (sh.getRange(1, KOPF_EG.length).getValue() === '') sh.getRange(1, 1, 1, KOPF_EG.length).setValues([KOPF_EG]).setFontWeight('bold');
+    zeileSetzen(sh, [d.datum, z(d.bezug), z(d.l1), z(d.l2), z(d.l3), z(d.l4), z(d.rest),
+      z(d.nBezug), z(d.nGeteilt), z(d.nRest), Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm'),
+      z(d.gas), z(d.nGas), d.gasEinheit || '']);
   } finally {
     lock.releaseLock();
   }

@@ -71,6 +71,8 @@
   table.eg th:first-child, table.eg td:first-child { text-align:left; }
   table.eg input { width:84px; font-size:14px; padding:4px 6px; text-align:right; border:1px solid var(--grid); border-radius:6px; background:var(--bg); color:var(--text); }
   .ok { color:#2fa86b; font-weight:600; } .abw { color:var(--warn); font-weight:600; }
+  table.eg tr.mon { cursor:pointer; } table.eg tr.mon td:first-child::before { content:'▸ '; color:var(--muted); }
+  table.eg tr.mon.auf td:first-child::before { content:'▾ '; } table.eg tr.tag td { font-size:13px; } table.eg tr.tag td:not(.ok):not(.abw) { color:var(--muted); }
 </style>
 </head>
 <body class="strom">
@@ -158,6 +160,12 @@
     </div>
     <div class="auswahl" id="eAuswahl"></div>
     <div class="chart hoch" id="eBox" style="display:none"><canvas id="cEigen"></canvas><div class="leer">Keine Werte in diesem Zeitraum.</div></div>
+  </div>
+
+  <div class="card nurStrom nurGas">
+    <div class="titel" id="vglTitel">Vergleich HomeWizard ↔ Leneda</div>
+    <div class="muted" id="vglInfo">Tagesverbrauch aus den eigenen Messungen neben dem Leneda-Wert. Nur Tage, für die beide Werte vorliegen. Monat antippen für die einzelnen Tage.</div>
+    <div class="tabWrap"><table class="eg" id="vglTab"></table></div>
   </div>
 
   <div class="card nurStrom">
@@ -853,6 +861,55 @@ function eigenZeichnen(d, ids, tage) {
   });
 }
 
+// ---------- Vergleich HomeWizard ↔ Leneda ----------
+const vglOffen = new Set();
+function vglZeigen() {
+  if (!daten || medium === 'wasser') return;
+  const strom = medium === 'strom';
+  const feld = strom ? 'import' : 'gas', lf = strom ? 'strom' : 'gas', einheit = strom ? 'kWh' : 'm³';
+  const tol = strom ? 1 : 3;   // ab dieser Abweichung in % rot
+  $('vglTitel').textContent = 'Vergleich HomeWizard ↔ Leneda – ' + (strom ? 'Strom' : 'Gas');
+  // HomeWizard: Endstand minus Endstand des Vortags, nur bei direkt aufeinanderfolgenden Tagen
+  const t = daten.tage, hw = {};
+  for (let i = 1; i < t.length; i++) {
+    const vortag = iso(new Date(new Date(t[i].datum + 'T12:00').getTime() - 864e5));
+    if (t[i - 1].datum === vortag && !isNaN(t[i][feld]) && !isNaN(t[i - 1][feld])) hw[t[i].datum] = t[i][feld] - t[i - 1][feld];
+  }
+  const len = {}, einheiten = new Set();
+  (daten.lenTage || []).forEach(x => { if (!leer(x[lf])) { len[x.datum] = Number(x[lf]); if (!strom && x.einheit) einheiten.add(x.einheit); } });
+  const tage = Object.keys(hw).filter(d => d in len).sort().reverse();
+  if (!tage.length) {
+    $('vglTab').innerHTML = '<tr><td class="muted" style="white-space:normal">Noch keine Tage mit beiden Werten.' +
+      (strom ? '' : ' Für Gas den Gas-Zählpunkt auf der Leneda-Seite der ESP eintragen.') + '</td></tr>';
+    return;
+  }
+  const zelle = (a, b) => {
+    const d = a - b, pz = b ? d / b * 100 : 0;
+    const k = Math.abs(pz) < tol ? 'ok' : 'abw';
+    return '<td>' + fmt(a, 3) + '</td><td>' + fmt(b, 3) + '</td><td class="' + k + '">' + (d > 0 ? '+' : '') + fmt(d, 3) +
+           '</td><td class="' + k + '">' + (pz > 0 ? '+' : '') + fmt(pz, 1) + ' %</td>';
+  };
+  const monate = {};
+  tage.forEach(d => (monate[d.slice(0, 7)] = monate[d.slice(0, 7)] || []).push(d));
+  let h = '<tr><th>Monat / Tag</th><th>Tage</th><th>HomeWizard (' + einheit + ')</th><th>Leneda (' + einheit + ')</th><th>Δ</th><th>Δ %</th></tr>';
+  Object.keys(monate).forEach(m => {
+    const ds = monate[m], a = ds.reduce((x, d) => x + hw[d], 0), b = ds.reduce((x, d) => x + len[d], 0);
+    const [j, mo] = m.split('-').map(Number);
+    const auf = vglOffen.has(m);
+    h += '<tr class="mon' + (auf ? ' auf' : '') + '" data-m="' + m + '"><td>' + new Date(j, mo - 1, 1).toLocaleDateString('de-DE', { month:'short', year:'numeric' }) +
+         '</td><td>' + ds.length + '</td>' + zelle(a, b) + '</tr>';
+    if (auf) ds.forEach(d => h += '<tr class="tag"><td>' + new Date(d + 'T12:00').toLocaleDateString('de-DE', { weekday:'short', day:'2-digit', month:'2-digit' }) +
+                                  '</td><td></td>' + zelle(hw[d], len[d]) + '</tr>');
+  });
+  $('vglTab').innerHTML = h;
+  $('vglInfo').textContent = 'Tagesverbrauch aus den eigenen Messungen neben dem Leneda-Wert. Nur Tage, für die beide Werte vorliegen. Monat antippen für die einzelnen Tage.' +
+    (!strom && [...einheiten].some(e => !/^m(3|³)$/i.test(e)) ? ' Achtung: Leneda liefert Gas in ' + [...einheiten].join(', ') + ', nicht in m³.' : '');
+  document.querySelectorAll('#vglTab tr.mon').forEach(z => z.onclick = () => {
+    vglOffen.has(z.dataset.m) ? vglOffen.delete(z.dataset.m) : vglOffen.add(z.dataset.m);
+    vglZeigen();
+  });
+}
+
 // ---------- Energiegemeinschaft ----------
 // Abweichung ab 0,05 kWh rot (Leneda und Rechnungen runden auf 0,001 kWh)
 const EG_TOL = 0.05;
@@ -927,12 +984,13 @@ async function laden() {
     anzeigen();
     preiseFuellen();
     if (!document.activeElement || !document.activeElement.closest('#egTab')) egZeigen();
+    vglZeigen();
   } catch (e) {
     $('zeit').textContent = 'Fehler beim Laden: ' + e.message;
   }
 }
 
-document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { medium = b.dataset.m; anzeigen(); });
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { medium = b.dataset.m; anzeigen(); vglZeigen(); });
 $('reload').onclick = laden;
 $('pSpeichern').onclick = preiseSpeichern;
 $('lImport').onclick = lenedaImport;

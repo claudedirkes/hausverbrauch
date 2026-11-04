@@ -31,7 +31,7 @@ const long NACHHOLEN_S = 5L * 60L; // fehlgeschlagene Abfrage bis 5 Min. nach de
 const char* ZEITZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Luxemburg inkl. Sommerzeit
 // --------------------------------------------
 
-const int FW_VERSION = 9;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
+const int FW_VERSION = 10;  // bei jeder neuen Firmware erhöhen (und version.txt im Repo anpassen)
 const char* OTA_VERSION_URL = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/version.txt";
 const char* OTA_BIN_URL     = "https://raw.githubusercontent.com/claudedirkes/hausverbrauch/main/firmware/hausverbrauch_ota.bin";
 const unsigned long OTA_INTERVALL_MS = 24UL * 60UL * 60UL * 1000UL;  // 24 Stunden
@@ -325,8 +325,9 @@ void rasterPruefen() {
 const char* LENEDA_URL = "https://api.leneda.lu/api/metering-points/";
 const char* LENEDA_OBIS[6] = { "1-1:1.29.0", "1-65:1.29.1", "1-65:1.29.3", "1-65:1.29.2", "1-65:1.29.4", "1-65:1.29.9" };
 const char* LENEDA_FELD[6] = { "bezug", "l1", "l2", "l3", "l4", "rest" };
+const char* LENEDA_OBIS_GAS = "7-1:99.23.15";   // Gas, gemessenes Volumen
 
-String lenKey, lenId, lenPod, lenAb, lenZurueck, lenStatus = "nicht eingerichtet", lenLetzter = "-";
+String lenKey, lenId, lenPod, lenPodGas, lenAb, lenZurueck, lenStatus = "nicht eingerichtet", lenLetzter = "-";
 String lenLuecken = "";        // Tage mit fehlender Aufteilung (kommagetrennt), aus dem Script
 bool lenLueckenHolen = true;   // Lückenliste beim Start und täglich neu holen
 const int LUECKEN_TAGE = 45;   // so weit zurück werden Lücken nachgeholt
@@ -334,7 +335,7 @@ unsigned long lenNaechsterMs = 0;
 
 void lenedaLaden() {
   Preferences p; p.begin("leneda", true);
-  lenKey = p.getString("key", ""); lenId = p.getString("id", ""); lenPod = p.getString("pod", "");
+  lenKey = p.getString("key", ""); lenId = p.getString("id", ""); lenPod = p.getString("pod", ""); lenPodGas = p.getString("podgas", "");
   lenAb = p.getString("ab", ""); lenZurueck = p.getString("zur", ""); lenLetzter = p.getString("letzter", "-");
   p.end();
   if (lenKey.length() && lenId.length() && lenPod.length() && lenAb.length()) lenStatus = "bereit";
@@ -352,10 +353,10 @@ String tagPlus(const String& d, int n) { return tagText(tagZeit(d, 12) + (time_t
 String utcText(time_t z) { struct tm t; gmtime_r(&z, &t); char b[21]; strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%SZ", &t); return b; }
 
 // Eine Reihe für einen Tag holen. Rückgabe: HTTP-Code; summe in kWh, anzahl = Werte
-int lenedaReihe(const char* obis, const String& von, const String& bis, double& summe, int& anzahl) {
+int lenedaReihe(const String& pod, const char* obis, const String& von, const String& bis, double& summe, int& anzahl, String* einheit) {
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
-  String url = String(LENEDA_URL) + lenPod + "/time-series?obisCode=" + obis + "&startDateTime=" + von + "&endDateTime=" + bis;
+  String url = String(LENEDA_URL) + pod + "/time-series?obisCode=" + obis + "&startDateTime=" + von + "&endDateTime=" + bis;
   http.begin(client, url);
   http.setTimeout(20000);
   http.addHeader("X-API-KEY", lenKey);
@@ -371,7 +372,9 @@ int lenedaReihe(const char* obis, const String& von, const String& bis, double& 
     else {
       String iv = j["intervalLength"] | "PT15M";
       double h = iv == "PT1H" ? 1.0 : iv == "PT30M" ? 0.5 : 0.25;
-      bool kw = String(j["unit"] | "") == "kW";
+      String u = j["unit"] | "";
+      if (einheit) *einheit = u;
+      bool kw = u == "kW";
       for (JsonObject it : j["items"].as<JsonArray>()) { summe += (double)(it["value"] | 0.0) * (kw ? h : 1.0); anzahl++; }
     }
   }
@@ -387,13 +390,19 @@ int lenedaTag(const String& tag) {
   int nGeteilt = 0;
   for (int i = 0; i < 6; i++) {
     double summe; int anzahl;
-    int code = lenedaReihe(LENEDA_OBIS[i], von, bis, summe, anzahl);
+    int code = lenedaReihe(lenPod, LENEDA_OBIS[i], von, bis, summe, anzahl, nullptr);
     if (code != 200) { lenStatus = String("Fehler ") + code + " bei " + LENEDA_OBIS[i] + " (" + tag + ")"; return -1; }
     if (i == 0 && anzahl == 0) return 0;
     out[LENEDA_FELD[i]] = round(summe * 1000) / 1000.0;
     if (i == 0) out["nBezug"] = anzahl; else if (i == 5) out["nRest"] = anzahl; else nGeteilt += anzahl;
   }
   out["nGeteilt"] = nGeteilt;
+  if (lenPodGas.length()) {                         // Gas optional: Fehler blockieren den Strom nicht
+    double summe; int anzahl; String einheit;
+    int code = lenedaReihe(lenPodGas, LENEDA_OBIS_GAS, von, bis, summe, anzahl, &einheit);
+    if (code == 200) { out["gas"] = round(summe * 1000) / 1000.0; out["nGas"] = anzahl; out["gasEinheit"] = einheit; }
+    else Serial.printf("Leneda Gas: HTTP %d\n", code);
+  }
   String body; serializeJson(out, body);
   if (!anScriptSenden(body)) { lenStatus = "Script nicht erreichbar (" + tag + ")"; return -1; }
   return 1;
@@ -479,6 +488,7 @@ void seiteLeneda() {
   if (server.method() == HTTP_POST) {
     if (server.arg("id").length())  { lenId = server.arg("id");   lenedaMerken("id", lenId); }
     if (server.arg("pod").length()) { lenPod = server.arg("pod"); lenedaMerken("pod", lenPod); }
+    if (server.hasArg("podgas"))    { lenPodGas = server.arg("podgas"); lenPodGas.trim(); lenedaMerken("podgas", lenPodGas); }
     if (server.arg("key").length()) { lenKey = server.arg("key"); lenedaMerken("key", lenKey); }
     if (server.arg("ab").length() == 10) { lenAb = server.arg("ab"); lenedaMerken("ab", lenAb); }
     lenStatus = (lenKey.length() && lenId.length() && lenPod.length() && lenAb.length()) ? "bereit" : "nicht eingerichtet";
@@ -495,6 +505,7 @@ void seiteLeneda() {
        "<br>Lücken (bis " + LUECKEN_TAGE + " Tage zurück, täglich ab 7 Uhr): " + (lenLuecken.length() ? lenLuecken : "keine") + "</p>";
   h += "<form method=\"post\"><label>Energy-ID</label><input name=\"id\" value=\"" + lenId + "\">";
   h += "<label>Zählpunkt Strom (POD)</label><input name=\"pod\" value=\"" + lenPod + "\">";
+  h += "<label>Zählpunkt Gas (POD, leer = kein Gas)</label><input name=\"podgas\" value=\"" + lenPodGas + "\">";
   h += String("<label>API-Key ") + (lenKey.length() ? "(gespeichert, leer lassen = behalten)" : "") + "</label><input name=\"key\" type=\"password\" autocomplete=\"off\">";
   h += "<label>Abrufen ab (JJJJ-MM-TT, setzt den Fortschritt zurück)</label><input name=\"ab\" type=\"date\">";
   h += F("<button>Speichern</button></form><p class=\"m\"><a href=\"/\" style=\"color:inherit\">zurück</a></p></body></html>");
