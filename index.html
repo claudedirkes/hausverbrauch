@@ -918,7 +918,9 @@ function egZeigen() {
     const geteilt = leer(m.bezug) ? null : m.l1 + m.l2 + m.l3 + m.l4;
     // Prozentsatz erst, wenn Leneda alles zugeordnet hat (Rest < 0,05 kWh, Leneda rundet auf 0,001 kWh)
     const offen = leer(m.bezug) ? null : m.bezug - geteilt - m.rest;
-    const eindeutig = !leer(offen) && Math.abs(offen) < 0.05;
+    // Anfangsmonat: Tage vor dem Start der Gemeinschaft sind nicht aufgeteilt, Anteil trotzdem auf den ganzen Monatsbezug
+    const start = m.monat === erster.monat;
+    const eindeutig = !leer(offen) && (Math.abs(offen) < 0.05 || start);
     const anteil = eindeutig && m.bezug > 0 ? geteilt / m.bezug * 100 : null;
     const [j, mo] = m.monat.split('-').map(Number);
     const tageMonat = new Date(j, mo, 0).getDate();
@@ -927,7 +929,8 @@ function egZeigen() {
     return '<tr><td>' + new Date(j, mo - 1, 1).toLocaleDateString('de-DE', { month:'short', year:'numeric' }) + '</td>' +
       '<td' + (voll ? '' : ' class="abw" title="Monat unvollständig"') + '>' + (m.tage || 0) + '/' + tageMonat + '</td>' +
       '<td>' + kwh(m.bezug) + '</td><td title="' + ebenen + '">' + kwh(geteilt) + '</td><td>' + kwh(m.rest) + '</td>' +
-      '<td' + (leer(anteil) && !leer(offen) ? ' class="muted" title="Leneda-Aufteilung noch nicht eindeutig"' : '') + '>' +
+      '<td' + (leer(anteil) && !leer(offen) ? ' class="muted" title="Leneda-Aufteilung noch nicht eindeutig"' :
+               start && !leer(anteil) ? ' title="Anfangsmonat der Energiegemeinschaft, bezogen auf den ganzen Monatsbezug"' : '') + '>' +
       (leer(anteil) ? (leer(offen) ? '–' : 'offen') : fmt(anteil, 1) + ' %') + '</td></tr>';
   }).join('');
 }
