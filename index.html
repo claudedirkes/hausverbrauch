@@ -169,7 +169,7 @@
 
   <div class="card nurStrom">
     <div class="titel">Energiegemeinschaft – Prüfung mit Leneda</div>
-    <div class="muted">Je Monat aus Leneda: Bezug, geteilt (alle Ebenen), Rest für den Lieferanten und was keiner Seite zugeordnet ist.
+    <div class="muted">Je Monat aus Leneda: Bezug, geteilt (alle Ebenen), Rest für den Lieferanten und Anteil der geteilten Energie am Bezug.
       Abruf über die Bridge (Live → Leneda-Abruf).</div>
     <div class="tabWrap"><table class="eg" id="egTab"></table></div>
   </div>
@@ -906,8 +906,6 @@ function vglZeigen() {
 }
 
 // ---------- Energiegemeinschaft ----------
-// Nicht zugeordnet ab 0,05 kWh rot (Leneda rundet auf 0,001 kWh)
-const EG_TOL = 0.05;
 function egZeigen() {
   // erst ab dem ersten Monat mit Aufteilung (Beginn der Energiegemeinschaft) anzeigen
   const alle = daten.eg || [];
@@ -915,10 +913,10 @@ function egZeigen() {
   const ms = erster ? alle.filter(m => m.monat >= erster.monat).reverse() : [];
   const kwh = v => leer(v) ? '–' : fmt(v, 3);
   if (!ms.length) { $('egTab').innerHTML = '<tr><td class="muted">Noch keine Leneda-Daten.</td></tr>'; return; }
-  const h = '<tr><th>Monat</th><th>Tage</th><th>Bezug</th><th>Geteilt</th><th>Rest</th><th>Nicht zugeordnet</th></tr>';
+  const h = '<tr><th>Monat</th><th>Tage</th><th>Bezug</th><th>Geteilt</th><th>Rest</th><th>Anteil geteilt</th></tr>';
   $('egTab').innerHTML = h + ms.map(m => {
     const geteilt = leer(m.bezug) ? null : m.l1 + m.l2 + m.l3 + m.l4;
-    const offen = leer(m.bezug) ? null : (Math.round((m.bezug - geteilt - m.rest) * 1000) / 1000 || 0);   // ohne "-0,000"
+    const anteil = leer(m.bezug) || !(m.bezug > 0) ? null : geteilt / m.bezug * 100;
     const [j, mo] = m.monat.split('-').map(Number);
     const tageMonat = new Date(j, mo, 0).getDate();
     const voll = m.tage >= tageMonat;
@@ -926,7 +924,7 @@ function egZeigen() {
     return '<tr><td>' + new Date(j, mo - 1, 1).toLocaleDateString('de-DE', { month:'short', year:'numeric' }) + '</td>' +
       '<td' + (voll ? '' : ' class="abw" title="Monat unvollständig"') + '>' + (m.tage || 0) + '/' + tageMonat + '</td>' +
       '<td>' + kwh(m.bezug) + '</td><td title="' + ebenen + '">' + kwh(geteilt) + '</td><td>' + kwh(m.rest) + '</td>' +
-      '<td>' + (leer(offen) ? '–' : '<span class="' + (Math.abs(offen) < EG_TOL ? 'ok' : 'abw') + '">' + fmt(offen, 3) + '</span>') + '</td></tr>';
+      '<td>' + (leer(anteil) ? '–' : fmt(anteil, 1) + ' %') + '</td></tr>';
   }).join('');
 }
 
