@@ -69,7 +69,6 @@
   table.eg th, table.eg td { padding:6px 8px; text-align:right; border-bottom:1px solid var(--grid); }
   table.eg th { color:var(--muted); font-weight:600; font-size:13px; }
   table.eg th:first-child, table.eg td:first-child { text-align:left; }
-  table.eg input { width:84px; font-size:14px; padding:4px 6px; text-align:right; border:1px solid var(--grid); border-radius:6px; background:var(--bg); color:var(--text); }
   .ok { color:#2fa86b; font-weight:600; } .abw { color:var(--warn); font-weight:600; }
   table.eg tr.mon { cursor:pointer; } table.eg tr.mon td:first-child::before { content:'▸ '; color:var(--muted); }
   table.eg tr.mon.auf td:first-child::before { content:'▾ '; } table.eg tr.tag td { font-size:13px; } table.eg tr.tag td:not(.ok):not(.abw) { color:var(--muted); }
@@ -171,12 +170,8 @@
   <div class="card nurStrom">
     <div class="titel">Energiegemeinschaft – Prüfung mit Leneda</div>
     <div class="muted">Je Monat aus Leneda: Bezug, geteilt (alle Ebenen), Rest für den Lieferanten und was keiner Seite zugeordnet ist.
-      Trag die kWh aus den Rechnungen ein, dann zeigt die Tabelle die Abweichung. Abruf über die Bridge (Live → Leneda-Abruf).</div>
+      Abruf über die Bridge (Live → Leneda-Abruf).</div>
     <div class="tabWrap"><table class="eg" id="egTab"></table></div>
-    <div class="preisZeile">
-      <button id="egSpeichern" type="button" class="haupt">Rechnungswerte speichern</button>
-      <span class="muted" id="egStatus"></span>
-    </div>
   </div>
 
   <div class="card">
@@ -911,22 +906,16 @@ function vglZeigen() {
 }
 
 // ---------- Energiegemeinschaft ----------
-// Abweichung ab 0,05 kWh rot (Leneda und Rechnungen runden auf 0,001 kWh)
+// Nicht zugeordnet ab 0,05 kWh rot (Leneda rundet auf 0,001 kWh)
 const EG_TOL = 0.05;
 function egZeigen() {
   // erst ab dem ersten Monat mit Aufteilung (Beginn der Energiegemeinschaft) anzeigen
   const alle = daten.eg || [];
-  const erster = alle.find(m => (m.l1 || 0) + (m.l2 || 0) + (m.l3 || 0) + (m.l4 || 0) + (m.rest || 0) > 0 || !leer(m.rGemeinschaft) || !leer(m.rLieferant));
+  const erster = alle.find(m => (m.l1 || 0) + (m.l2 || 0) + (m.l3 || 0) + (m.l4 || 0) + (m.rest || 0) > 0);
   const ms = erster ? alle.filter(m => m.monat >= erster.monat).reverse() : [];
   const kwh = v => leer(v) ? '–' : fmt(v, 3);
-  const diff = (a, b) => {
-    if (leer(a) || leer(b)) return '';
-    const d = b - a;
-    return '<span class="' + (Math.abs(d) < EG_TOL ? 'ok' : 'abw') + '">' + (Math.abs(d) < EG_TOL ? '✓' : (d > 0 ? '+' : '') + fmt(d, 3)) + '</span>';
-  };
   if (!ms.length) { $('egTab').innerHTML = '<tr><td class="muted">Noch keine Leneda-Daten.</td></tr>'; return; }
-  const h = '<tr><th>Monat</th><th>Tage</th><th>Bezug</th><th>Geteilt</th><th>Rest</th><th>Nicht zugeordnet</th>' +
-            '<th>Rechnung Gemeinschaft</th><th>Δ</th><th>Rechnung Lieferant</th><th>Δ</th></tr>';
+  const h = '<tr><th>Monat</th><th>Tage</th><th>Bezug</th><th>Geteilt</th><th>Rest</th><th>Nicht zugeordnet</th></tr>';
   $('egTab').innerHTML = h + ms.map(m => {
     const geteilt = leer(m.bezug) ? null : m.l1 + m.l2 + m.l3 + m.l4;
     const offen = leer(m.bezug) ? null : (Math.round((m.bezug - geteilt - m.rest) * 1000) / 1000 || 0);   // ohne "-0,000"
@@ -937,41 +926,8 @@ function egZeigen() {
     return '<tr><td>' + new Date(j, mo - 1, 1).toLocaleDateString('de-DE', { month:'short', year:'numeric' }) + '</td>' +
       '<td' + (voll ? '' : ' class="abw" title="Monat unvollständig"') + '>' + (m.tage || 0) + '/' + tageMonat + '</td>' +
       '<td>' + kwh(m.bezug) + '</td><td title="' + ebenen + '">' + kwh(geteilt) + '</td><td>' + kwh(m.rest) + '</td>' +
-      '<td>' + (leer(offen) ? '–' : '<span class="' + (Math.abs(offen) < EG_TOL ? 'ok' : 'abw') + '">' + fmt(offen, 3) + '</span>') + '</td>' +
-      '<td><input data-monat="' + m.monat + '" data-f="gemeinschaft" inputmode="decimal" value="' + (leer(m.rGemeinschaft) ? '' : fmt(m.rGemeinschaft, 3)) + '"></td>' +
-      '<td>' + diff(geteilt, m.rGemeinschaft) + '</td>' +
-      '<td><input data-monat="' + m.monat + '" data-f="lieferant" inputmode="decimal" value="' + (leer(m.rLieferant) ? '' : fmt(m.rLieferant, 3)) + '"></td>' +
-      '<td>' + diff(m.rest, m.rLieferant) + '</td></tr>';
+      '<td>' + (leer(offen) ? '–' : '<span class="' + (Math.abs(offen) < EG_TOL ? 'ok' : 'abw') + '">' + fmt(offen, 3) + '</span>') + '</td></tr>';
   }).join('');
-}
-
-async function egSpeichern() {
-  // "1.234,567" oder "254,149" (Komma = Dezimal) bzw. "254.149" (nur Punkt = Dezimal)
-  const zahl = v => { v = v.trim(); if (v === '') return ''; return Number(v.includes(',') ? v.replace(/\./g, '').replace(',', '.') : v); };
-  const monate = {};
-  document.querySelectorAll('#egTab input').forEach(i => {
-    const m = monate[i.dataset.monat] || (monate[i.dataset.monat] = {});
-    m[i.dataset.f] = zahl(i.value);
-  });
-  const alt = {};
-  (daten.eg || []).forEach(m => alt[m.monat] = m);
-  const geaendert = Object.keys(monate).filter(k => {
-    const a = alt[k] || {}, n = monate[k];
-    const gleich = (x, y) => (leer(x) && y === '') || (!leer(x) && y !== '' && Math.abs(x - y) < 1e-9);
-    return !gleich(a.rGemeinschaft, n.gemeinschaft) || !gleich(a.rLieferant, n.lieferant);
-  });
-  if (Object.values(monate).some(n => [n.gemeinschaft, n.lieferant].some(v => v !== '' && isNaN(v)))) { $('egStatus').textContent = 'Ungültige Zahl.'; return; }
-  if (!geaendert.length) { $('egStatus').textContent = 'Nichts geändert.'; return; }
-  const key = schreibKey();
-  if (!key) return;
-  $('egStatus').textContent = 'speichert …';
-  try {
-    for (const k of geaendert) await senden(key, { aktion:'rechnung', monat:k, gemeinschaft:monate[k].gemeinschaft, lieferant:monate[k].lieferant });
-    $('egStatus').textContent = 'Gespeichert.';
-    laden();
-  } catch (e) {
-    $('egStatus').textContent = 'Nicht gespeichert: ' + e.message;
-  }
 }
 
 async function laden() {
@@ -983,7 +939,7 @@ async function laden() {
     if (!daten.ok) throw new Error('Antwort ungültig');
     anzeigen();
     preiseFuellen();
-    if (!document.activeElement || !document.activeElement.closest('#egTab')) egZeigen();
+    egZeigen();
     vglZeigen();
   } catch (e) {
     $('zeit').textContent = 'Fehler beim Laden: ' + e.message;
@@ -995,7 +951,6 @@ $('reload').onclick = laden;
 $('pSpeichern').onclick = preiseSpeichern;
 $('lImport').onclick = lenedaImport;
 $('eZeigen').onclick = eigenZeigen;
-$('egSpeichern').onclick = egSpeichern;
 eigenAuswahlBauen();
 laden();
 setInterval(laden, 5 * 60 * 1000);
